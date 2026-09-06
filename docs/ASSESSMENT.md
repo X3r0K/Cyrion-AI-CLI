@@ -32,6 +32,11 @@ IDs and extensions accept only conservative path segments. Absolute paths,
 additional URI segments, and traversal values are rejected. Tool audit events
 contain metadata only; evidence content stays in the artifact store.
 
+The controller does not accept a structurally valid reference on trust. It
+looks up the canonical store record, compares all metadata, and verifies the
+stored bytes before merging a worker result. The same admission gate runs when
+reconciling a completion after restart.
+
 These scenarios are lifecycle and evaluation fixtures. They are not assessment
 playbooks, real exploits, or claims about a live system.
 

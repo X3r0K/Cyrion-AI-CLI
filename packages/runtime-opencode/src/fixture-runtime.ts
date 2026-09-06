@@ -1,7 +1,6 @@
 import type {
   AgentRuntime,
   EvidenceRef,
-  EvidenceStore,
   Finding,
   FindingStatus,
   RuntimeContext,
@@ -11,23 +10,19 @@ import type {
   ToolExecutionRequest,
   WorkerResult,
 } from "@cyrion/contracts"
-import { MemoryEvidenceStore } from "@cyrion/evidence"
 
 export type FixtureScenario = "known-positive" | "clean" | "rejected" | "incomplete"
 
 export interface FixtureRuntimeOptions {
   scenario?: FixtureScenario
-  evidenceStore?: EvidenceStore
 }
 
 export class FixtureAgentRuntime implements AgentRuntime {
   readonly #cancelled = new Set<string>()
   readonly #scenario: FixtureScenario
-  readonly #evidenceStore: EvidenceStore
 
   constructor(options: FixtureRuntimeOptions = {}) {
     this.#scenario = options.scenario ?? "known-positive"
-    this.#evidenceStore = options.evidenceStore ?? new MemoryEvidenceStore()
   }
 
   async runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
@@ -201,7 +196,7 @@ export class FixtureAgentRuntime implements AgentRuntime {
     contentType: string,
     extension?: string,
   ): Promise<EvidenceRef> {
-    return this.#evidenceStore.capture({
+    return context.evidenceStore.capture({
       engagementId: context.engagementId,
       id,
       kind,

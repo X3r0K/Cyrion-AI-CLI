@@ -32,6 +32,9 @@ testing, but it is not presented as a network sandbox.
 | Tool exceeds deadline or is cancelled | Abort signal terminates child | Yes |
 | Parent credential variables reach worker | Explicit child environment | Yes |
 | Evidence artifact is modified | SHA-256 evidence verification | Yes |
+| Worker references a missing artifact | Controller evidence admission | Yes |
+| Worker changes canonical evidence metadata | Controller evidence admission | Yes |
+| Durable completion loses its artifact | Recovery-time evidence admission | Yes |
 | Evidence contains terminal controls | TUI preview sanitization | Yes |
 | Worker or controller is interrupted | Durable lease reconciliation | Yes |
 | Provider returns malformed or opaque fields | Runtime contract parser | Yes |

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { join, resolve, sep } from "node:path"
-import type { EvidenceCapture, EvidenceRef, EvidenceStore } from "@cyrion/contracts"
+import { evidenceRefContractError, type EvidenceCapture, type EvidenceRef, type EvidenceStore } from "@cyrion/contracts"
 
 const safeSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -47,6 +47,22 @@ export class LocalEvidenceStore implements EvidenceStore {
     return new Uint8Array(await readFile(this.#pathFromUri(reference.uri)))
   }
 
+  async metadata(reference: EvidenceRef): Promise<EvidenceRef | undefined> {
+    try {
+      this.#pathFromUri(reference.uri)
+      validateSegment("evidence ID", reference.id)
+      const engagementId = reference.uri.slice("artifact://".length).split("/")[0]
+      if (!engagementId) return undefined
+      const metadataPath = this.#inside(this.#directory(engagementId), `${reference.id}.meta.json`)
+      const value: unknown = JSON.parse(await readFile(metadataPath, "utf8"))
+      if (evidenceRefContractError(value)) return undefined
+      const metadata = value as EvidenceRef
+      return metadata.id === reference.id && metadata.uri === reference.uri ? metadata : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async verify(reference: EvidenceRef): Promise<boolean> {
     try {
       const bytes = await this.read(reference)
@@ -79,7 +95,10 @@ export class LocalEvidenceStore implements EvidenceStore {
 
   async #existing(metadataPath: string, artifactPath: string, expectedHash: string): Promise<EvidenceRef | undefined> {
     try {
-      const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as EvidenceRef
+      const value: unknown = JSON.parse(await readFile(metadataPath, "utf8"))
+      const metadataError = evidenceRefContractError(value)
+      if (metadataError) throw new Error(`Existing evidence metadata is invalid: ${metadataError}`)
+      const metadata = value as EvidenceRef
       const artifact = await readFile(artifactPath)
       const actualHash = createHash("sha256").update(artifact).digest("hex")
       if (metadata.sha256 !== expectedHash || actualHash !== expectedHash) {
@@ -95,6 +114,7 @@ export class LocalEvidenceStore implements EvidenceStore {
 
 export class MemoryEvidenceStore implements EvidenceStore {
   readonly #content = new Map<string, Uint8Array>()
+  readonly #references = new Map<string, EvidenceRef>()
 
   async capture(input: EvidenceCapture): Promise<EvidenceRef> {
     validateSegment("engagement ID", input.engagementId)
@@ -115,8 +135,16 @@ export class MemoryEvidenceStore implements EvidenceStore {
     if (existing && createHash("sha256").update(existing).digest("hex") !== reference.sha256) {
       throw new Error(`Evidence ID ${input.id} already exists with different content`)
     }
+    const existingReference = this.#references.get(reference.uri)
+    if (existingReference) return structuredClone(existingReference)
     this.#content.set(reference.uri, bytes)
+    this.#references.set(reference.uri, structuredClone(reference))
     return reference
+  }
+
+  async metadata(reference: EvidenceRef): Promise<EvidenceRef | undefined> {
+    const stored = this.#references.get(reference.uri)
+    return stored?.id === reference.id ? structuredClone(stored) : undefined
   }
 
   async read(reference: EvidenceRef): Promise<Uint8Array> {

@@ -28,10 +28,10 @@ describe("controlled assessment workflow", () => {
       })
       const controller = new CyrionController(
         manifest,
-        new FixtureAgentRuntime({ scenario: item.scenario, evidenceStore }),
+        new FixtureAgentRuntime({ scenario: item.scenario }),
         new FixtureRootPlanner(),
         join(projectRoot, "agents"),
-        { toolGateway: gateway, heartbeatIntervalMs: 50 },
+        { toolGateway: gateway, heartbeatIntervalMs: 50, evidenceStore },
       )
       const result = await controller.run()
 

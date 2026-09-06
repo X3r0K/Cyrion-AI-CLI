@@ -15,7 +15,7 @@
     },
     "apps/cli": {
       "name": "@cyrion/cli",
-      "version": "0.1.0",
+      "version": "0.1.0-alpha.1",
       "bin": {
         "cyrion": "./src/index.ts",
       },
@@ -37,6 +37,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
+        "@cyrion/evidence": "workspace:*",
       },
     },
     "packages/evidence": {
@@ -58,7 +59,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
-        "@cyrion/evidence": "workspace:*",
         "@opencode-ai/sdk": "1.18.29",
       },
     },

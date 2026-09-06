@@ -57,7 +57,9 @@ bun run demo:headless --fixture incomplete
 
 Evidence and report artifacts are written under `.cyrion/artifacts` by default.
 Use `--artifacts <directory>` to select another location. Every artifact has a
-separate metadata record and is verified by SHA-256.
+separate metadata record. Before accepting a worker result, the controller
+requires that record to exist, match the returned reference exactly, and pass
+SHA-256 verification.
 
 Persist a run to inspect or export it later:
 
@@ -107,5 +109,7 @@ See [Post-alpha hardening](docs/HARDENING.md) for the subprocess threat model,
 failure matrix, and remaining container/egress boundary.
 See [Untrusted output boundary](docs/OUTPUT-BOUNDARY.md) for runtime contract,
 provenance, and finding-transition enforcement.
+See [Evidence admission](docs/EVIDENCE-ADMISSION.md) for canonical metadata,
+integrity checks, and recovery-time artifact validation.
 See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
 headless safeguards, audit events, and restart behavior.

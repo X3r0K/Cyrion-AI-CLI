@@ -16,6 +16,7 @@ import {
   SQLiteEngagementStore,
   taskInputHash,
 } from "@cyrion/controller"
+import { MemoryEvidenceStore } from "@cyrion/evidence"
 import { FixtureAgentRuntime, FixtureToolAdapter } from "@cyrion/runtime-opencode"
 
 const projectRoot = join(import.meta.dir, "..")
@@ -197,20 +198,20 @@ describe("community orchestration slice", () => {
       usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
       events: [],
     })
+    const evidenceStore = new MemoryEvidenceStore()
+    const replayedEvidence = await evidenceStore.capture({
+      engagementId: engagement.id,
+      id: "E-001",
+      kind: "fixture",
+      content: JSON.stringify({ assets: ["demo.lab.test"] }),
+      contentType: "application/json",
+      source: "recon-t-001",
+    })
     const replayedResult = {
       summary: "Already completed before process interruption.",
       observations: [],
       findings: [],
-      evidence: [{
-        id: "E-001",
-        kind: "fixture" as const,
-        uri: `artifact://${engagement.id}/E-001.json`,
-        sha256: "a".repeat(64),
-        capturedAt: startedAt,
-        source: "recon-t-001",
-        contentType: "application/json",
-        sizeBytes: 128,
-      }],
+      evidence: [replayedEvidence],
     }
     store.append({
       engagementId: engagement.id,
@@ -228,7 +229,12 @@ describe("community orchestration slice", () => {
       new FixtureAgentRuntime(),
       new FixtureRootPlanner(),
       join(projectRoot, "agents"),
-      { store: recoveredStore, toolGateway: fixtureGateway(engagement, adapter), heartbeatIntervalMs: 50 },
+      {
+        store: recoveredStore,
+        toolGateway: fixtureGateway(engagement, adapter),
+        heartbeatIntervalMs: 50,
+        evidenceStore,
+      },
     )
     const result = await controller.run()
 

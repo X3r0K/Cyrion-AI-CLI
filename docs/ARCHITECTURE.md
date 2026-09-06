@@ -78,13 +78,19 @@ the durable event log.
 ## Evidence boundary
 
 Workers return normalized evidence references rather than embedding artifacts
-in controller state. The local evidence store writes an immutable-intent
-artifact and a separate metadata record, both with owner-only file permissions.
-References use portable `artifact://` URIs; SHA-256 and byte length allow the
-controller, reporter, or operator to detect missing or modified content.
+in controller state. The controller owns the evidence store and passes it into
+each runtime. Before merging a result, it resolves every reference to canonical
+store metadata, requires an exact metadata match, and verifies the artifact
+digest and byte length. Recovery repeats this admission check before trusting a
+previously durable completion event.
 
-The product terminal receives the same `EvidenceStore` instance as the fixture
-runtime. Its inspector performs an integrity check before rendering a bounded,
+The local evidence store writes an immutable-intent artifact and a separate
+metadata record, both with owner-only file permissions. References use portable
+`artifact://` URIs; SHA-256 and byte length allow the controller, reporter, or
+operator to detect missing or modified content.
+
+The product terminal receives the same `EvidenceStore` instance as the
+controller. Its inspector performs an integrity check before rendering a bounded,
 control-character-sanitized preview. Selection and responsive presentation stay
 inside `apps/cli`; neither can mutate controller state beyond the explicit
 operator message and lifecycle methods.

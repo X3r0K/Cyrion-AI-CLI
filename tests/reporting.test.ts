@@ -55,7 +55,7 @@ async function runFixture(manifest: EngagementManifest) {
   const adapter = new FixtureToolAdapter()
   const controller = new CyrionController(
     manifest,
-    new FixtureAgentRuntime({ evidenceStore }),
+    new FixtureAgentRuntime(),
     new FixtureRootPlanner(),
     join(projectRoot, "agents"),
     {
@@ -64,6 +64,7 @@ async function runFixture(manifest: EngagementManifest) {
         "fixture.compare": adapter,
       }),
       heartbeatIntervalMs: 50,
+      evidenceStore,
     },
   )
   const snapshot = await controller.run()

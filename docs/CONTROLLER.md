@@ -30,6 +30,11 @@ worker execution.
   validation transitions are independently enforced by the controller.
 - Invalid results emit a bounded `task.result.rejected` audit event without
   persisting the rejected provider payload.
+- The controller owns the engagement evidence store. Worker references are
+  admitted only when canonical metadata exists, matches every returned field,
+  and the artifact digest and byte length verify.
+- Recovery revalidates evidence attached to durable completion events and
+  requeues the original task when an artifact is missing or changed.
 - Supervised manifests hold every valid Root delegation behind a durable
   approve-or-deny gate. Recovered approvals are policy-checked again before
   task queue mutation.
@@ -46,6 +51,11 @@ bun run demo:headless --state .cyrion/community.sqlite
 The supplied manifest must exactly match the manifest stored for that
 engagement ID. This prevents an operator or model from silently widening scope
 during resume.
+
+Durable state must be paired with a durable evidence store. The CLI supplies
+its local artifact store to the controller automatically; custom integrations
+must do the same or recovery will safely reject references that are unavailable
+in the configured store.
 
 ## Current isolation boundary
 

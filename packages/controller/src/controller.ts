@@ -12,6 +12,8 @@ import {
   type AgentRuntime,
   type EngagementManifest,
   type EngagementSnapshot,
+  type EvidenceRef,
+  type EvidenceStore,
   type EventType,
   type Finding,
   type PendingApproval,
@@ -21,6 +23,7 @@ import {
   type TaskSpec,
   type WorkerResult,
 } from "@cyrion/contracts"
+import { MemoryEvidenceStore } from "@cyrion/evidence"
 import { type EngagementStore, MemoryEventStore } from "./event-store"
 import { ScopedToolGateway } from "./tool-gateway"
 
@@ -30,6 +33,7 @@ export interface ControllerOptions {
   leaseDurationMs?: number
   heartbeatIntervalMs?: number
   autoApprove?: boolean
+  evidenceStore?: EvidenceStore
 }
 
 export class CyrionController {
@@ -41,6 +45,7 @@ export class CyrionController {
   readonly #leaseDurationMs: number
   readonly #heartbeatIntervalMs: number
   readonly #autoApprove: boolean
+  readonly #evidenceStore: EvidenceStore
   #snapshot: EngagementSnapshot
   #paused = false
   #cancelled = false
@@ -62,6 +67,7 @@ export class CyrionController {
     this.#leaseDurationMs = options.leaseDurationMs ?? 5_000
     this.#heartbeatIntervalMs = options.heartbeatIntervalMs ?? 1_000
     this.#autoApprove = options.autoApprove ?? false
+    this.#evidenceStore = options.evidenceStore ?? new MemoryEvidenceStore()
     if (this.#leaseDurationMs < 100) throw new Error("Lease duration must be at least 100 milliseconds")
     if (this.#heartbeatIntervalMs < 25 || this.#heartbeatIntervalMs >= this.#leaseDurationMs) {
       throw new Error("Heartbeat interval must be at least 25ms and shorter than the lease")
@@ -98,7 +104,7 @@ export class CyrionController {
       return this.snapshot
     }
     if (this.#snapshot.status === "idle") this.#start()
-    else this.#recover()
+    else await this.#recover()
 
     try {
       while (!this.#cancelled) {
@@ -297,7 +303,7 @@ export class CyrionController {
     this.#persist()
   }
 
-  #recover(): void {
+  async #recover(): Promise<void> {
     this.#record("engagement.recovered", { previousStatus: this.#snapshot.status }, "root-agent")
     this.#paused = false
     this.#snapshot.status = "running"
@@ -329,7 +335,10 @@ export class CyrionController {
       const policyRejection = contractRejection || completedResult === undefined
         ? undefined
         : workerResultPolicyError(completedResult as WorkerResult, task, this.#snapshot, task.agentId ?? "")
-      if (completedEvent && completedResult && !contractRejection && !policyRejection) {
+      const evidenceRejection = contractRejection || policyRejection || completedResult === undefined
+        ? undefined
+        : await this.#evidenceAdmissionError(completedResult as WorkerResult)
+      if (completedEvent && completedResult && !contractRejection && !policyRejection && !evidenceRejection) {
         const acceptedResult = completedResult as WorkerResult
         this.#record(
           "task.reconciled",
@@ -357,10 +366,10 @@ export class CyrionController {
         }
         continue
       }
-      if (completedEvent && completedResult && (contractRejection || policyRejection)) {
+      if (completedEvent && completedResult && (contractRejection || policyRejection || evidenceRejection)) {
         this.#record(
           "task.result.rejected",
-          { reason: contractRejection ?? policyRejection },
+          { reason: contractRejection ?? policyRejection ?? evidenceRejection },
           task.agentId,
           task.id,
         )
@@ -608,6 +617,7 @@ export class CyrionController {
         scope: structuredClone(this.#snapshot.manifest.scope),
         remainingBudget: this.#remainingBudget(),
         tools,
+        evidenceStore: this.#evidenceStore,
       })
       clearInterval(heartbeat)
       const contractRejection = workerResultContractError(result)
@@ -620,6 +630,11 @@ export class CyrionController {
       if (policyRejection) {
         this.#record("task.result.rejected", { reason: policyRejection }, agentId, task.id)
         throw new Error(`Worker result rejected: ${policyRejection}`)
+      }
+      const evidenceRejection = await this.#evidenceAdmissionError(result)
+      if (evidenceRejection) {
+        this.#record("task.result.rejected", { reason: evidenceRejection }, agentId, task.id)
+        throw new Error(`Worker result rejected: ${evidenceRejection}`)
       }
       const finishedAt = new Date().toISOString()
       this.#record("task.completed", { summary: result.summary, result }, agentId, task.id)
@@ -740,6 +755,23 @@ export class CyrionController {
       this.#record("budget.exceeded", { reason, usage: next }, "root-agent")
       throw new Error(reason)
     }
+  }
+
+  async #evidenceAdmissionError(result: WorkerResult): Promise<string | undefined> {
+    for (const reference of result.evidence) {
+      let canonical: EvidenceRef | undefined
+      let verified = false
+      try {
+        canonical = await this.#evidenceStore.metadata(reference)
+        if (canonical) verified = await this.#evidenceStore.verify(canonical)
+      } catch {
+        return `Evidence ${reference.id} is inaccessible in the configured store`
+      }
+      if (!canonical) return `Evidence ${reference.id} is missing from the configured store`
+      if (!sameEvidenceMetadata(reference, canonical)) return `Evidence ${reference.id} metadata does not match the store`
+      if (!verified) return `Evidence ${reference.id} failed integrity verification`
+    }
+    return undefined
   }
 
   async #waitWhilePaused(): Promise<void> {
@@ -878,4 +910,15 @@ function boundedOperatorReason(reason: string): string {
     .trim()
     .slice(0, 1_024)
   return clean || "Delegation denied by operator"
+}
+
+function sameEvidenceMetadata(left: EvidenceRef, right: EvidenceRef): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.uri === right.uri
+    && left.sha256 === right.sha256
+    && left.capturedAt === right.capturedAt
+    && left.source === right.source
+    && left.contentType === right.contentType
+    && left.sizeBytes === right.sizeBytes
 }

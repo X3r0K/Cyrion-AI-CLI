@@ -10,7 +10,8 @@ proprietary operating methodology.
 - Separate agent sessions, cancellation, pause/resume, leases, and budgets.
 - Durable supervised approval for every Root delegation.
 - Generic Recon, Web, API, Validator, and Reporter roles.
-- Local evidence storage and transparent status UI.
+- Local evidence storage, controller-owned admission checks, and transparent
+  status UI.
 - Versioned local status and report exports that omit artifact bodies.
 - Provider/runtime adapters and contributor extension points.
 

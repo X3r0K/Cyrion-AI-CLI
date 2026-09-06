@@ -4,6 +4,10 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Made the controller own the engagement evidence store and require canonical
+  metadata plus SHA-256 verification before accepting worker evidence.
+- Added recovery-time evidence revalidation and adversarial tests for missing,
+  forged, and post-capture-tampered artifacts.
 - Implemented durable supervised delegation with interactive approve/deny
   controls, explicit headless opt-in, audit events, and restart revalidation.
 - Added strict runtime parsing for manifests, Root decisions, worker results,

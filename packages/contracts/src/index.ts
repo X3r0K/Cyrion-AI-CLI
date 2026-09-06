@@ -69,6 +69,7 @@ export interface EvidenceCapture {
 
 export interface EvidenceStore {
   capture(input: EvidenceCapture): Promise<EvidenceRef>
+  metadata(reference: EvidenceRef): Promise<EvidenceRef | undefined>
   read(reference: EvidenceRef): Promise<Uint8Array>
   verify(reference: EvidenceRef): Promise<boolean>
 }
@@ -216,6 +217,7 @@ export interface RuntimeContext {
   scope: ScopePolicy
   remainingBudget: EngagementBudgets
   tools: ToolGateway
+  evidenceStore: EvidenceStore
 }
 
 export interface ToolInvocation {
@@ -376,7 +378,7 @@ export function workerResultContractError(value: unknown): string | undefined {
     if (error) return error
   }
   for (let index = 0; index < value.evidence.length; index += 1) {
-    const error = evidenceContractError(value.evidence[index], `evidence[${index}]`)
+    const error = evidenceRefContractError(value.evidence[index], `evidence[${index}]`)
     if (error) return error
   }
   if ("report" in value && !validText(value.report, 1_048_576, true)) return "report must be a bounded string"
@@ -458,7 +460,7 @@ function findingContractError(value: unknown, path: string): string | undefined 
   return stringListError(value.evidenceIds, `${path}.evidenceIds`, { minimum: 1, safe: true })
 }
 
-function evidenceContractError(value: unknown, path: string): string | undefined {
+export function evidenceRefContractError(value: unknown, path = "evidence"): string | undefined {
   if (!isRecord(value)) return `${path} must be an object`
   const extra = unexpectedKey(value, ["id", "kind", "uri", "sha256", "capturedAt", "source", "contentType", "sizeBytes"])
   if (extra) return `${path} contains unexpected field ${extra}`

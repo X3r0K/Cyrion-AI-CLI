@@ -72,7 +72,7 @@ describe("product terminal state", () => {
     const adapter = new FixtureToolAdapter()
     const controller = new CyrionController(
       value,
-      new FixtureAgentRuntime({ evidenceStore }),
+      new FixtureAgentRuntime(),
       new FixtureRootPlanner(),
       join(projectRoot, "agents"),
       {
@@ -81,6 +81,7 @@ describe("product terminal state", () => {
           "fixture.compare": adapter,
         }),
         heartbeatIntervalMs: 50,
+        evidenceStore,
       },
     )
 
@@ -139,7 +140,7 @@ async function completedSnapshot(withChat = false): Promise<EngagementSnapshot> 
   const adapter = new FixtureToolAdapter()
   const controller = new CyrionController(
     manifest,
-    new FixtureAgentRuntime({ evidenceStore }),
+    new FixtureAgentRuntime(),
     new FixtureRootPlanner(),
     join(projectRoot, "agents"),
     {
@@ -148,6 +149,7 @@ async function completedSnapshot(withChat = false): Promise<EngagementSnapshot> 
         "fixture.compare": adapter,
       }),
       heartbeatIntervalMs: 50,
+      evidenceStore,
     },
   )
   await controller.run()

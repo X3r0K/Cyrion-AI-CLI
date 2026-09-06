@@ -78,10 +78,10 @@ async function runDemo(): Promise<void> {
   })
   const controller = new CyrionController(
     manifest as EngagementManifest,
-    new FixtureAgentRuntime({ scenario: scenario as FixtureScenario, evidenceStore }),
+    new FixtureAgentRuntime({ scenario: scenario as FixtureScenario }),
     new FixtureRootPlanner(),
     join(projectRoot, "agents"),
-    { ...(store ? { store } : {}), toolGateway, autoApprove },
+    { ...(store ? { store } : {}), toolGateway, autoApprove, evidenceStore },
   )
 
   if (headless) {

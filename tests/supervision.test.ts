@@ -96,7 +96,7 @@ describe("supervised delegation", () => {
     const recoveredStore = new SQLiteEngagementStore(databasePath, manifest.id)
     const controller = new CyrionController(
       manifest,
-      new FixtureAgentRuntime({ evidenceStore }),
+      new FixtureAgentRuntime(),
       new FixtureRootPlanner(),
       join(projectRoot, "agents"),
       {
@@ -104,6 +104,7 @@ describe("supervised delegation", () => {
         toolGateway: fixtureGateway(manifest, adapter),
         heartbeatIntervalMs: 50,
         autoApprove: true,
+        evidenceStore,
       },
     )
     const result = await controller.run()
@@ -215,7 +216,7 @@ describe("supervised delegation", () => {
     const recoveredStore = new SQLiteEngagementStore(databasePath, manifest.id)
     const controller = new CyrionController(
       manifest,
-      new FixtureAgentRuntime({ evidenceStore }),
+      new FixtureAgentRuntime(),
       new FixtureRootPlanner(),
       join(projectRoot, "agents"),
       {
@@ -223,6 +224,7 @@ describe("supervised delegation", () => {
         toolGateway: fixtureGateway(manifest, adapter),
         heartbeatIntervalMs: 50,
         autoApprove: true,
+        evidenceStore,
       },
     )
     const result = await controller.run()
@@ -298,10 +300,10 @@ async function supervisedController(): Promise<{ controller: CyrionController; a
     adapter,
     controller: new CyrionController(
       manifest,
-      new FixtureAgentRuntime({ evidenceStore }),
+      new FixtureAgentRuntime(),
       new FixtureRootPlanner(),
       join(projectRoot, "agents"),
-      { toolGateway: fixtureGateway(manifest, adapter), heartbeatIntervalMs: 50 },
+      { toolGateway: fixtureGateway(manifest, adapter), heartbeatIntervalMs: 50, evidenceStore },
     ),
   }
 }
