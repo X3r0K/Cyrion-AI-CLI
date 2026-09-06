@@ -177,6 +177,19 @@ export class CyrionController {
     const clean = content.trim()
     if (!clean) return
     this.#record("operator.message", { content: clean }, "root-agent")
+    const active = this.#snapshot.tasks.filter((task) => task.status === "running").map((task) => task.role)
+    const confirmed = this.#snapshot.findings.filter((finding) => finding.status === "confirmed").length
+    const unresolved = this.#snapshot.findings.filter((finding) =>
+      finding.status === "candidate" || finding.status === "validating" || finding.status === "inconclusive"
+    ).length
+    const response = this.#snapshot.status === "completed"
+      ? `Mission complete: ${this.#snapshot.tasks.length} tasks finished, ${confirmed} confirmed, ${unresolved} unresolved, ${this.#snapshot.evidence.length} artifacts captured.`
+      : this.#snapshot.status === "paused"
+        ? `Dispatch is paused. ${active.length ? `${active.join(" and ")} operations may still be settling.` : "No worker is active."}`
+        : active.length
+          ? `Root is coordinating ${active.join(" and ")}. Current record: ${confirmed} confirmed, ${unresolved} unresolved, ${this.#snapshot.evidence.length} artifacts.`
+          : `Root is preparing the next bounded decision. Current record: ${confirmed} confirmed and ${this.#snapshot.evidence.length} artifacts.`
+    this.#record("root.message", { content: response }, "root-agent")
   }
 
   close(): void {

@@ -128,6 +128,7 @@ export type EventType =
   | "engagement.failed"
   | "root.decision.proposed"
   | "root.decision.rejected"
+  | "root.message"
   | "task.queued"
   | "task.started"
   | "task.lease.acquired"

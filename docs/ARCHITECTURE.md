@@ -72,3 +72,9 @@ in controller state. The local evidence store writes an immutable-intent
 artifact and a separate metadata record, both with owner-only file permissions.
 References use portable `artifact://` URIs; SHA-256 and byte length allow the
 controller, reporter, or operator to detect missing or modified content.
+
+The product terminal receives the same `EvidenceStore` instance as the fixture
+runtime. Its inspector performs an integrity check before rendering a bounded,
+control-character-sanitized preview. Selection and responsive presentation stay
+inside `apps/cli`; neither can mutate controller state beyond the explicit
+operator message and lifecycle methods.

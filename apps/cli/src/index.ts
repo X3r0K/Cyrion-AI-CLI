@@ -66,7 +66,7 @@ if (headless) {
   process.exit(result.status === "completed" ? 0 : 1)
 }
 
-await runTui(controller)
+await runTui(controller, evidenceStore)
 controller.close()
 
 function readFlag(name: string): string | undefined {

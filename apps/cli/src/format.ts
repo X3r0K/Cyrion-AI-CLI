@@ -4,16 +4,22 @@ import { theme } from "./theme"
 
 export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE"
 
-export function formatSwarm(snapshot: EngagementSnapshot): StyledText {
+export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: string): StyledText {
   const root = snapshot.agents.find((agent) => agent.role === "root")
   const workers = snapshot.agents.filter((agent) => agent.role !== "root")
+  const selectedAgentId = snapshot.tasks.find((task) => task.id === selectedTaskId)?.agentId
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("ROOT ORCHESTRATOR"), plain("  "), status(root?.status ?? "queued", "root")])
   appendRule(chunks)
   appendLine(chunks, [accent("■  "), strong(root?.name ?? "root-agent")])
   for (const [index, worker] of workers.entries()) {
     const branch = index === workers.length - 1 ? "└─" : "├─"
-    appendLine(chunks, [dim(`${branch} `), statusGlyph(worker.status, worker.role), plain(` ${worker.name}`)])
+    const name = ` ${worker.name}`
+    appendLine(chunks, [
+      dim(`${branch} `),
+      statusGlyph(worker.status, worker.role),
+      worker.id === selectedAgentId ? bg(theme.selection)(accent(`${name}  ‹`)) : plain(name),
+    ])
     appendLine(chunks, [dim("   "), status(worker.status, worker.role), dim(`  ${worker.role.toUpperCase()}`)])
   }
   const active = snapshot.agents.filter((agent) => agent.status === "running").length
@@ -35,18 +41,32 @@ export function formatMission(snapshot: EngagementSnapshot): StyledText {
     appendLine(chunks, [dim(`${number}  `), plain(task.objective.slice(0, 39).padEnd(40)), taskStatus(task.status)])
   }
   appendSection(chunks, "ACTIVITY FEED")
-  for (const event of snapshot.events.slice(-6)) {
+  for (const event of snapshot.events.filter((item) => item.type !== "task.heartbeat").slice(-5)) {
     appendLine(chunks, [
       dim(`${event.timestamp.slice(11, 19)}  `),
       accent((event.agentId ?? "controller").padEnd(15)),
       plain(eventLabel(event.type)),
     ])
   }
+  const conversation = snapshot.events.filter((event) => event.type === "operator.message" || event.type === "root.message").slice(-2)
+  if (conversation.length) {
+    appendSection(chunks, "ROOT CHAT")
+    for (const event of conversation) {
+      const payload = event.payload as { content?: unknown }
+      const content = typeof payload.content === "string" ? sanitizeTerminalText(payload.content, 240) : ""
+      appendLine(chunks, [
+        event.type === "operator.message" ? dim("operator  >  ") : accent("root      >  "),
+        plain(content),
+      ])
+    }
+  }
   return new StyledText(chunks)
 }
 
-export function formatTaskBoard(snapshot: EngagementSnapshot): StyledText {
-  const selected = snapshot.tasks.findLast((task) => task.status === "running") ?? snapshot.tasks.at(-1)
+export function formatTaskBoard(snapshot: EngagementSnapshot, selectedTaskId?: string): StyledText {
+  const selected = snapshot.tasks.find((task) => task.id === selectedTaskId)
+    ?? snapshot.tasks.findLast((task) => task.status === "running")
+    ?? snapshot.tasks.at(-1)
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("LIVE TASK BOARD"), dim("  /  ROOT DISPATCH")])
   appendRule(chunks, 62)
@@ -77,7 +97,7 @@ export function formatTaskBoard(snapshot: EngagementSnapshot): StyledText {
   return new StyledText(chunks)
 }
 
-export function formatFindings(snapshot: EngagementSnapshot): StyledText {
+export function formatFindings(snapshot: EngagementSnapshot, selectedFindingId?: string): StyledText {
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("FINDINGS"), dim(`  /  ${countFindings(snapshot.findings)}`)])
   appendRule(chunks, 62)
@@ -89,7 +109,8 @@ export function formatFindings(snapshot: EngagementSnapshot): StyledText {
     const severity = fg(severityColor(finding.severity))(finding.severity.toUpperCase().padEnd(10))
     const verdict = fg(findingColor(finding.status))(finding.status.toUpperCase())
     const title = `${finding.id}  ${finding.title}`
-    appendLine(chunks, [index === 0 ? bg(theme.selection)(accent(`› ${title}`)) : plain(`  ${title}`)])
+    const selected = finding.id === selectedFindingId || (!selectedFindingId && index === 0)
+    appendLine(chunks, [selected ? bg(theme.selection)(accent(`› ${title}`)) : plain(`  ${title}`)])
     appendLine(chunks, [plain("  "), severity, dim("  |  "), verdict])
     appendRule(chunks, 62)
   }
@@ -97,8 +118,8 @@ export function formatFindings(snapshot: EngagementSnapshot): StyledText {
   return new StyledText(chunks)
 }
 
-export function formatFindingDetail(snapshot: EngagementSnapshot): StyledText {
-  const finding = snapshot.findings.at(0)
+export function formatFindingDetail(snapshot: EngagementSnapshot, selectedFindingId?: string): StyledText {
+  const finding = snapshot.findings.find((item) => item.id === selectedFindingId) ?? snapshot.findings.at(0)
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("FINDING INSPECTOR")])
   appendRule(chunks)
@@ -122,15 +143,107 @@ export function formatFindingDetail(snapshot: EngagementSnapshot): StyledText {
   return new StyledText(chunks)
 }
 
-export function formatEvidence(snapshot: EngagementSnapshot): StyledText {
+export function formatEvidence(snapshot: EngagementSnapshot, selectedEvidenceId?: string): StyledText {
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("EVIDENCE INDEX"), dim(`  /  ${snapshot.evidence.length} ARTIFACTS`)])
   appendRule(chunks, 62)
   if (!snapshot.evidence.length) appendLine(chunks, [dim("No artifacts captured.")], false)
-  for (const item of snapshot.evidence) {
-    appendLine(chunks, [accent("■ "), strong(item.id), warning(`  ${item.kind.toUpperCase().padEnd(9)}`), plain(item.uri)])
+  for (const [index, item] of snapshot.evidence.entries()) {
+    const selected = item.id === selectedEvidenceId || (!selectedEvidenceId && index === 0)
+    appendLine(chunks, [
+      selected ? bg(theme.selection)(accent("› ")) : accent("■ "),
+      strong(item.id),
+      warning(`  ${item.kind.toUpperCase().padEnd(9)}`),
+      plain(sanitizeTerminalText(item.uri)),
+    ])
     appendLine(chunks, [dim(`   sha256  ${item.sha256.slice(0, 32)}…`)])
   }
+  return new StyledText(chunks)
+}
+
+export function formatWorkerInspector(snapshot: EngagementSnapshot, selectedTaskId?: string): StyledText {
+  const task = snapshot.tasks.find((item) => item.id === selectedTaskId)
+    ?? snapshot.tasks.findLast((item) => item.status === "running")
+    ?? snapshot.tasks.at(-1)
+  const agent = snapshot.agents.find((item) => item.id === task?.agentId)
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("WORKER INSPECTOR")])
+  appendRule(chunks)
+  if (!task) {
+    appendLine(chunks, [dim("Waiting for Root to create a task.")], false)
+    return new StyledText(chunks)
+  }
+  appendLine(chunks, [accent(agent?.name ?? task.role), dim("  /  "), taskStatus(task.status)])
+  appendLine(chunks, [])
+  appendKeyValue(chunks, "Role", task.role.toUpperCase())
+  appendKeyValue(chunks, "Task", task.id)
+  appendKeyValue(chunks, "Target", task.target)
+  appendKeyValue(chunks, "Attempt", String(task.attempt))
+  appendKeyValue(chunks, "Lease", task.lease ? "HEALTHY" : "RELEASED")
+  appendSection(chunks, "ASSIGNMENT", 30)
+  appendLine(chunks, [plain(sanitizeTerminalText(task.objective))])
+  appendSection(chunks, "CAPABILITIES", 30)
+  for (const capability of task.capabilities) appendLine(chunks, [success("■ "), plain(capability)])
+  appendSection(chunks, "LAST ACTIVITY", 30)
+  const activity = snapshot.events.filter((event) => event.taskId === task.id).slice(-4)
+  if (!activity.length) appendLine(chunks, [dim("No worker events yet.")])
+  for (const event of activity) {
+    appendLine(chunks, [dim(`${event.timestamp.slice(11, 19)}  `), accent(eventLabel(event.type))])
+  }
+  if (task.result?.summary) {
+    appendSection(chunks, "RESULT", 30)
+    appendLine(chunks, [plain(sanitizeTerminalText(task.result.summary))], false)
+  }
+  return new StyledText(chunks)
+}
+
+export type EvidenceVerification = "idle" | "loading" | "verified" | "failed"
+
+export function formatEvidenceInspector(
+  snapshot: EngagementSnapshot,
+  selectedEvidenceId: string | undefined,
+  preview: string,
+  verification: EvidenceVerification,
+): StyledText {
+  const evidence = snapshot.evidence.find((item) => item.id === selectedEvidenceId) ?? snapshot.evidence.at(0)
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("EVIDENCE INSPECTOR")])
+  appendRule(chunks)
+  if (!evidence) {
+    appendLine(chunks, [dim("Select an artifact when one is available.")], false)
+    return new StyledText(chunks)
+  }
+  appendLine(chunks, [accent(evidence.id), dim("  /  "), warning(evidence.kind.toUpperCase())])
+  appendLine(chunks, [])
+  appendKeyValue(chunks, "Source", evidence.source ?? "unknown")
+  appendKeyValue(chunks, "Type", evidence.contentType ?? "unknown")
+  appendKeyValue(chunks, "Bytes", String(evidence.sizeBytes ?? "unknown"))
+  appendKeyValue(chunks, "Captured", evidence.capturedAt.slice(11, 19))
+  appendLine(chunks, [dim("Integrity     "), verificationStatus(verification)])
+  appendSection(chunks, "SHA-256", 30)
+  appendLine(chunks, [dim(evidence.sha256.slice(0, 32))])
+  appendLine(chunks, [dim(evidence.sha256.slice(32))])
+  appendSection(chunks, "ARTIFACT PREVIEW", 30)
+  appendLine(chunks, [plain(preview || (verification === "loading" ? "Loading local artifact…" : "No preview available."))], false)
+  return new StyledText(chunks)
+}
+
+export function formatCommandHelp(): StyledText {
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("COMMANDS")])
+  appendRule(chunks)
+  appendLine(chunks, [accent("1–4       "), plain("Mission / Swarm / Findings / Evidence")])
+  appendLine(chunks, [accent("↑ ↓ / j k "), plain("Move current selection")])
+  appendLine(chunks, [accent("← → / h l "), plain("Move between views")])
+  appendLine(chunks, [accent("Enter / e "), plain("Open supporting evidence")])
+  appendLine(chunks, [accent("Tab / i   "), plain("Focus or leave Root chat")])
+  appendLine(chunks, [accent("p         "), plain("Pause or resume dispatch")])
+  appendLine(chunks, [accent("? / Ctrl+K"), plain("Toggle this command guide")])
+  appendLine(chunks, [accent("q         "), plain("Quit and cancel active workers")])
+  appendSection(chunks, "SAFETY", 28)
+  appendLine(chunks, [success("■ SCOPE LOCKED")])
+  appendLine(chunks, [success("■ LOCAL ARTIFACTS")])
+  appendLine(chunks, [warning("◇ FIXTURE WORKERS ONLY")], false)
   return new StyledText(chunks)
 }
 
@@ -181,6 +294,15 @@ export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
   appendLine(chunks, [warning("◇ "), plain(`${snapshot.findings.filter((item) => item.status === "inconclusive").length} inconclusive`)])
   appendLine(chunks, [accent("■ "), plain(`${snapshot.evidence.length} artifacts`)], false)
   return new StyledText(chunks)
+}
+
+export function sanitizeTerminalText(value: string, maxLength = 2_400): string {
+  const clean = value
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "")
+  if (clean.length <= maxLength) return clean
+  return `${clean.slice(0, maxLength)}\n… preview truncated …`
 }
 
 function missionSummary(snapshot: EngagementSnapshot): string {
@@ -276,8 +398,15 @@ function taskColor(value: TaskStatus): string {
 function findingColor(value: Finding["status"]): string {
   if (value === "confirmed") return theme.success
   if (value === "rejected") return theme.danger
-  if (value === "candidate") return theme.warning
+  if (value === "candidate" || value === "validating" || value === "inconclusive") return theme.warning
   return theme.dim
+}
+
+function verificationStatus(value: EvidenceVerification): TextChunk {
+  if (value === "verified") return success("■ VERIFIED")
+  if (value === "failed") return fg(theme.danger)("! HASH MISMATCH")
+  if (value === "loading") return warning("◇ VERIFYING")
+  return dim("◇ NOT CHECKED")
 }
 
 function validationVerdict(value: Finding["status"]): TextChunk {

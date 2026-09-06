@@ -7,7 +7,7 @@ This repository is a clean-room community implementation. It reuses product
 concepts and public interfaces, not proprietary Cyrion prompt text, scoring
 heuristics, private evaluators, attack recipes, or hosted-platform code.
 
-## Foundation demo
+## Product terminal demo
 
 The first slice proves the complete control loop with harmless fixture data:
 
@@ -24,9 +24,11 @@ bun run demo
 ```
 
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
-supports `1`–`4` to switch views, `p` to pause/resume dispatch, and `q` to quit.
-If work is still active, `q` cancels the leased workers before returning control
-to the shell.
+supports `1`–`4` to switch views, arrows or `j`/`k` to select workers, findings,
+and evidence, `Enter` to inspect, `i` to focus Root chat, `p` to pause/resume
+dispatch, and `q` to quit. If work is still active, `q` cancels the leased
+workers before returning control to the shell. Press `?` for the full keyboard
+reference.
 
 To exercise durable state and restart-safe task reconciliation, provide a local
 SQLite path:
@@ -79,3 +81,5 @@ See [Controller and execution](docs/CONTROLLER.md) for the durable-state and
 tool-gateway guarantees and their current limitations.
 See [Assessment workflow](docs/ASSESSMENT.md) for fixture outcomes and the
 validation gate.
+See [Product terminal](docs/TERMINAL.md) for navigation, evidence inspection,
+responsive layouts, and `NO_COLOR` behavior.
