@@ -101,3 +101,5 @@ See [Installation](docs/INSTALLATION.md) and [Release process](docs/RELEASE.md)
 for the distributable bundle and clean-package verification flow.
 See [Post-alpha hardening](docs/HARDENING.md) for the subprocess threat model,
 failure matrix, and remaining container/egress boundary.
+See [Untrusted output boundary](docs/OUTPUT-BOUNDARY.md) for runtime contract,
+provenance, and finding-transition enforcement.

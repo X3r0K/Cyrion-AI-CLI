@@ -4,6 +4,9 @@ import { join } from "node:path"
 import {
   CONTRACT_VERSION,
   assertManifest,
+  resourceUsageContractError,
+  rootDecisionContractError,
+  workerResultContractError,
   type AgentRecord,
   type AgentRuntime,
   type EngagementManifest,
@@ -96,6 +99,11 @@ export class CyrionController {
         const decision = await this.#planner.decide(this.snapshot)
         const plannerUsage = this.#planner.takeUsage?.()
         if (plannerUsage) this.#applyUsage({ usage: plannerUsage })
+        const contractRejection = rootDecisionContractError(decision)
+        if (contractRejection) {
+          this.#record("root.decision.rejected", { rejection: contractRejection }, "root-agent")
+          throw new Error(contractRejection)
+        }
         this.#record("root.decision.proposed", decision, "root-agent")
 
         const rejection = this.#validateDecision(decision)
@@ -231,9 +239,14 @@ export class CyrionController {
     for (const task of this.#snapshot.tasks.filter((item) => item.status === "running")) {
       const completedEvent = this.events.list("task.completed").findLast((event) => event.taskId === task.id)
       const completedResult = completedEvent
-        ? (completedEvent.payload as { result?: WorkerResult }).result
+        ? (completedEvent.payload as { result?: unknown }).result
         : undefined
-      if (completedEvent && completedResult) {
+      const contractRejection = completedResult === undefined ? undefined : workerResultContractError(completedResult)
+      const policyRejection = contractRejection || completedResult === undefined
+        ? undefined
+        : workerResultPolicyError(completedResult as WorkerResult, task, this.#snapshot, task.agentId ?? "")
+      if (completedEvent && completedResult && !contractRejection && !policyRejection) {
+        const acceptedResult = completedResult as WorkerResult
         this.#record(
           "task.reconciled",
           { previousStatus: "running", action: "accept-completed-event", eventId: completedEvent.id },
@@ -241,24 +254,32 @@ export class CyrionController {
           task.id,
         )
         task.status = "completed"
-        task.result = structuredClone(completedResult)
+        task.result = structuredClone(acceptedResult)
         delete task.lease
         const completedAgent = this.#snapshot.agents.find((agent) => agent.id === task.agentId)
         if (completedAgent) {
           completedAgent.status = "completed"
           completedAgent.finishedAt = completedEvent.timestamp
         }
-        for (const evidence of completedResult.evidence) {
+        for (const evidence of acceptedResult.evidence) {
           if (!this.#snapshot.evidence.some((item) => item.id === evidence.id)) {
             this.#snapshot.evidence.push(structuredClone(evidence))
           }
         }
-        for (const finding of completedResult.findings) {
+        for (const finding of acceptedResult.findings) {
           const existing = this.#snapshot.findings.find((item) => item.id === finding.id)
           if (existing) Object.assign(existing, structuredClone(finding))
           else this.#snapshot.findings.push(structuredClone(finding))
         }
         continue
+      }
+      if (completedEvent && completedResult && (contractRejection || policyRejection)) {
+        this.#record(
+          "task.result.rejected",
+          { reason: contractRejection ?? policyRejection },
+          task.agentId,
+          task.id,
+        )
       }
       this.#record(
         "task.reconciled",
@@ -386,7 +407,17 @@ export class CyrionController {
         tools,
       })
       clearInterval(heartbeat)
+      const contractRejection = workerResultContractError(result)
+      if (contractRejection) {
+        this.#record("task.result.rejected", { reason: contractRejection }, agentId, task.id)
+        throw new Error(`Worker result rejected: ${contractRejection}`)
+      }
       this.#applyUsage(result)
+      const policyRejection = workerResultPolicyError(result, task, this.#snapshot, agentId)
+      if (policyRejection) {
+        this.#record("task.result.rejected", { reason: policyRejection }, agentId, task.id)
+        throw new Error(`Worker result rejected: ${policyRejection}`)
+      }
       const finishedAt = new Date().toISOString()
       this.#record("task.completed", { summary: result.summary, result }, agentId, task.id)
       task.status = "completed"
@@ -427,6 +458,7 @@ export class CyrionController {
     const ids = new Set(this.#snapshot.tasks.map((task) => task.id))
     const keys = new Set(this.#snapshot.tasks.map((task) => task.key))
     const hashes = new Set(this.#snapshot.tasks.map((task) => task.inputHash))
+    const validatorFindings = new Set<string>()
     const knownIds = new Set([
       ...this.#snapshot.tasks.map((item) => item.id),
       ...decision.action.tasks.map((item) => item.id),
@@ -438,12 +470,36 @@ export class CyrionController {
       keys.add(task.key)
       hashes.add(inputHash)
       if (task.depth > budgets.maxDepth) return `Depth limit exceeded: ${task.id}`
+      const expectedOutput = {
+        recon: "inventory",
+        web: "assessment",
+        api: "assessment",
+        validator: "validation",
+        reporter: "report",
+      }[task.role]
+      if (task.expectedOutput !== expectedOutput) return `Role/output mismatch: ${task.id}`
+      if (task.dependencies.includes(task.id)) return `Self dependency rejected: ${task.id}`
+      if (task.parentTaskId === task.id) return `Self parent rejected: ${task.id}`
+      if (task.parentTaskId && !knownIds.has(task.parentTaskId)) return `Unknown parent task in ${task.id}`
       if (!scope.targets.includes(task.target) || scope.excluded.includes(task.target)) return `Out-of-scope target: ${task.target}`
       if (task.capabilities.some((capability) => !scope.capabilities.includes(capability))) {
         return `Capability not granted: ${task.id}`
       }
       if (task.dependencies.some((id) => !knownIds.has(id))) return `Unknown dependency in ${task.id}`
+      if (task.role === "validator") {
+        const candidate = task.findingId
+          ? this.#snapshot.findings.find((finding) => finding.id === task.findingId && finding.status === "candidate")
+          : undefined
+        if (!candidate || candidate.asset !== task.target) return `Validator task does not match a candidate: ${task.id}`
+        if (validatorFindings.has(candidate.id)) return `Duplicate validator assignment: ${candidate.id}`
+        validatorFindings.add(candidate.id)
+      } else if (task.findingId) {
+        return `Only validator tasks may reference a finding: ${task.id}`
+      }
     }
+    const graph = new Map(this.#snapshot.tasks.map((task) => [task.id, task.dependencies]))
+    for (const task of decision.action.tasks) graph.set(task.id, task.dependencies)
+    if (hasDependencyCycle(graph)) return "Task dependency cycle rejected"
     return undefined
   }
 
@@ -465,6 +521,8 @@ export class CyrionController {
 
   #applyUsage(result: { usage?: { inputTokens: number; outputTokens: number; costUsd: number } }): void {
     if (!result.usage) return
+    const usageError = resourceUsageContractError(result.usage)
+    if (usageError) throw new Error(`Resource usage rejected: ${usageError}`)
     const next = {
       inputTokens: this.#snapshot.usage.inputTokens + result.usage.inputTokens,
       outputTokens: this.#snapshot.usage.outputTokens + result.usage.outputTokens,
@@ -510,4 +568,103 @@ function normalizeStoredSnapshot(snapshot: EngagementSnapshot): EngagementSnapsh
     task.attempt ??= task.status === "queued" ? 0 : 1
   }
   return normalized
+}
+
+export function workerResultPolicyError(
+  result: WorkerResult,
+  task: TaskSpec,
+  snapshot: EngagementSnapshot,
+  agentId: string,
+): string | undefined {
+  if (task.role === "reporter") {
+    if (result.observations.length || result.findings.length) return "Reporter cannot mutate observations or findings"
+    if (typeof result.report !== "string") return "Reporter result requires a report"
+  } else if (result.report !== undefined) {
+    return "Only the reporter may return report content"
+  }
+  if (task.role === "recon" && result.findings.length) return "Recon cannot create findings"
+
+  const evidenceIds = new Set<string>()
+  const acceptedEvidenceIds = new Set(snapshot.evidence.map((evidence) => evidence.id))
+  const artifactPrefix = `artifact://${snapshot.manifest.id}/`
+  for (const evidence of result.evidence) {
+    if (evidenceIds.has(evidence.id) || acceptedEvidenceIds.has(evidence.id)) return `Duplicate evidence ID: ${evidence.id}`
+    if (evidence.source !== agentId) return `Evidence ${evidence.id} is not owned by ${agentId}`
+    if (!evidence.uri.startsWith(artifactPrefix)) return `Evidence ${evidence.id} has an invalid engagement URI`
+    const filename = evidence.uri.slice(artifactPrefix.length)
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename)
+      || (filename !== evidence.id && !filename.startsWith(`${evidence.id}.`))
+    ) {
+      return `Evidence ${evidence.id} has an invalid artifact filename`
+    }
+    evidenceIds.add(evidence.id)
+    acceptedEvidenceIds.add(evidence.id)
+  }
+
+  const observationIds = new Set<string>()
+  for (const observation of result.observations) {
+    if (observationIds.has(observation.id)) return `Duplicate observation ID: ${observation.id}`
+    if (observation.asset !== task.target) return `Observation ${observation.id} changed the assigned target`
+    if (observation.source !== agentId) return `Observation ${observation.id} has invalid provenance`
+    const missing = observation.evidenceIds.find((id) => !acceptedEvidenceIds.has(id))
+    if (missing) return `Observation ${observation.id} references unknown evidence ${missing}`
+    observationIds.add(observation.id)
+  }
+
+  const findingIds = new Set<string>()
+  for (const finding of result.findings) {
+    if (findingIds.has(finding.id)) return `Duplicate finding ID: ${finding.id}`
+    if (finding.asset !== task.target) return `Finding ${finding.id} changed the assigned target`
+    const missing = finding.evidenceIds.find((id) => !acceptedEvidenceIds.has(id))
+    if (missing) return `Finding ${finding.id} references unknown evidence ${missing}`
+    findingIds.add(finding.id)
+  }
+
+  if (task.role === "validator") {
+    if (!task.findingId || result.findings.length !== 1) return "Validator must return exactly one assigned finding"
+    const existing = snapshot.findings.find((finding) => finding.id === task.findingId)
+    const verdict = result.findings[0]
+    if (!existing || !verdict || verdict.id !== task.findingId) return "Validator returned an unassigned finding"
+    if (!["confirmed", "rejected", "inconclusive"].includes(verdict.status)) return "Validator returned a non-final status"
+    if (verdict.validatedBy !== agentId) return "Validator result has invalid validator provenance"
+    if (
+      verdict.discoveredBy !== existing.discoveredBy
+      || verdict.title !== existing.title
+      || verdict.asset !== existing.asset
+      || verdict.severity !== existing.severity
+    ) return "Validator changed immutable candidate fields"
+    if (!existing.evidenceIds.every((id) => verdict.evidenceIds.includes(id))) {
+      return "Validator removed discovery evidence"
+    }
+    if (!verdict.evidenceIds.some((id) => evidenceIds.has(id))) return "Validator did not attach fresh evidence"
+    return undefined
+  }
+
+  for (const finding of result.findings) {
+    if (snapshot.findings.some((existing) => existing.id === finding.id)) return `Finding ID already exists: ${finding.id}`
+    if (finding.status !== "candidate") return `Worker finding ${finding.id} must begin as a candidate`
+    if (finding.discoveredBy !== agentId || finding.validatedBy !== undefined) {
+      return `Worker finding ${finding.id} has invalid discovery provenance`
+    }
+    if (!finding.evidenceIds.some((id) => evidenceIds.has(id))) return `Worker finding ${finding.id} has no fresh evidence`
+  }
+  return undefined
+}
+
+function hasDependencyCycle(graph: ReadonlyMap<string, readonly string[]>): boolean {
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (id: string): boolean => {
+    if (visiting.has(id)) return true
+    if (visited.has(id)) return false
+    visiting.add(id)
+    for (const dependency of graph.get(id) ?? []) {
+      if (graph.has(dependency) && visit(dependency)) return true
+    }
+    visiting.delete(id)
+    visited.add(id)
+    return false
+  }
+  return [...graph.keys()].some(visit)
 }

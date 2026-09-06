@@ -25,6 +25,11 @@ worker execution.
   copied into the event log.
 - OpenCode-reported token and cost use is accumulated and enforced against the
   engagement budget.
+- Provider output is runtime-validated before persistence. Evidence ownership,
+  target provenance, role/output matching, acyclic dependencies, and candidate
+  validation transitions are independently enforced by the controller.
+- Invalid results emit a bounded `task.result.rejected` audit event without
+  persisting the rejected provider payload.
 
 ## Persistence modes
 

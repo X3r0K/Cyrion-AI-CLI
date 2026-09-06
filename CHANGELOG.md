@@ -4,6 +4,11 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added strict runtime parsing for manifests, Root decisions, worker results,
+  evidence metadata, findings, and provider usage.
+- Bound worker output to task targets and agent provenance, enforced fresh
+  independent validation, and rejected cyclic task graphs.
+- Added bounded `task.result.rejected` audit events and adversarial output tests.
 - Run fixture capabilities in short-lived subprocesses with a scrubbed
   environment, private work directory, bounded streams, and abort-driven
   termination.

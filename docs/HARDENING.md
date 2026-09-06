@@ -34,6 +34,9 @@ testing, but it is not presented as a network sandbox.
 | Evidence artifact is modified | SHA-256 evidence verification | Yes |
 | Evidence contains terminal controls | TUI preview sanitization | Yes |
 | Worker or controller is interrupted | Durable lease reconciliation | Yes |
+| Provider returns malformed or opaque fields | Runtime contract parser | Yes |
+| Worker forges target, source, or finding status | Controller result policy | Yes |
+| Root creates a cyclic task graph | Controller decision policy | Yes |
 
 ## Remaining boundary
 

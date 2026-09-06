@@ -65,6 +65,12 @@ Provider-reported token and cost usage is accumulated into the engagement and
 checked against the manifest. The remaining budget passed to each worker is
 calculated from measured use and elapsed wall time.
 
+Provider JSON is untrusted after schema generation. Runtime contract checks
+reject unknown or malformed fields before persistence, then controller policy
+binds accepted observations, evidence, and findings to the exact task, target,
+agent, and allowed finding transition. Rejected opaque output is not copied into
+the durable event log.
+
 ## Evidence boundary
 
 Workers return normalized evidence references rather than embedding artifacts

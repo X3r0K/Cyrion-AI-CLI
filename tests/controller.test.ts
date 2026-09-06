@@ -204,9 +204,12 @@ describe("community orchestration slice", () => {
       evidence: [{
         id: "E-001",
         kind: "fixture" as const,
-        uri: "fixture://inventory/approved-assets",
+        uri: `artifact://${engagement.id}/E-001.json`,
         sha256: "a".repeat(64),
         capturedAt: startedAt,
+        source: "recon-t-001",
+        contentType: "application/json",
+        sizeBytes: 128,
       }],
     }
     store.append({
