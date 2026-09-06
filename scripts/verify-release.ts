@@ -11,7 +11,7 @@ try {
   const filename = (await readdir(sandbox)).find((entry) => entry.endsWith(".tgz"))
   if (!filename) throw new Error("npm pack did not return a package filename")
   const tarball = join(sandbox, filename)
-  const checksum = createHash("sha256").update(await Bun.file(tarball).arrayBuffer()).digest("hex")
+  const checksum = createHash("sha256").update(new Uint8Array(await Bun.file(tarball).arrayBuffer())).digest("hex")
   const listing = await run(["tar", "-tzf", tarball], projectRoot)
   const forbidden = listing.split("\n").find((entry) =>
     entry.includes("/.env")
