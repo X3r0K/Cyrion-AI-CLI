@@ -9,7 +9,7 @@
         "@opentui/core": "0.5.10",
       },
       "devDependencies": {
-        "@types/bun": "latest",
+        "@types/bun": "1.4.1",
         "typescript": "5.9.2",
       },
     },
@@ -23,6 +23,7 @@
         "@cyrion/contracts": "workspace:*",
         "@cyrion/controller": "workspace:*",
         "@cyrion/evidence": "workspace:*",
+        "@cyrion/reporting": "workspace:*",
         "@cyrion/runtime-opencode": "workspace:*",
         "@opentui/core": "0.5.10",
       },
@@ -40,6 +41,13 @@
     },
     "packages/evidence": {
       "name": "@cyrion/evidence",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
+    "packages/reporting": {
+      "name": "@cyrion/reporting",
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
@@ -63,6 +71,8 @@
     "@cyrion/controller": ["@cyrion/controller@workspace:packages/controller"],
 
     "@cyrion/evidence": ["@cyrion/evidence@workspace:packages/evidence"],
+
+    "@cyrion/reporting": ["@cyrion/reporting@workspace:packages/reporting"],
 
     "@cyrion/runtime-opencode": ["@cyrion/runtime-opencode@workspace:packages/runtime-opencode"],
 

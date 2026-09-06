@@ -34,3 +34,7 @@ contain metadata only; evidence content stays in the artifact store.
 
 These scenarios are lifecycle and evaluation fixtures. They are not assessment
 playbooks, real exploits, or claims about a live system.
+
+`fixtures/manifest.json` versions the fixture set and records the expected task,
+evidence, and finding outcome for each scenario. Release checks treat this file
+as the public reproducibility contract.

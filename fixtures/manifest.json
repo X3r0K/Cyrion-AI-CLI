@@ -1,0 +1,30 @@
+{
+  "fixtureVersion": "2026.09.0",
+  "contractVersion": "cyrion.community/v1",
+  "scenarios": {
+    "known-positive": {
+      "engagementId": "ENG-0042",
+      "findingStatus": "confirmed",
+      "tasks": 5,
+      "evidence": 6
+    },
+    "clean": {
+      "engagementId": "ENG-CLEAN",
+      "findingStatus": null,
+      "tasks": 4,
+      "evidence": 5
+    },
+    "rejected": {
+      "engagementId": "ENG-REJECTED",
+      "findingStatus": "rejected",
+      "tasks": 5,
+      "evidence": 6
+    },
+    "incomplete": {
+      "engagementId": "ENG-INCOMPLETE",
+      "findingStatus": "inconclusive",
+      "tasks": 5,
+      "evidence": 6
+    }
+  }
+}

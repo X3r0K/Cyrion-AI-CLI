@@ -55,6 +55,18 @@ Evidence and report artifacts are written under `.cyrion/artifacts` by default.
 Use `--artifacts <directory>` to select another location. Every artifact has a
 separate metadata record and is verified by SHA-256.
 
+Persist a run to inspect or export it later:
+
+```bash
+bun run demo:headless --fixture known-positive --state .cyrion/community.sqlite
+bun apps/cli/src/index.ts status ENG-0042 --state .cyrion/community.sqlite
+bun apps/cli/src/index.ts report ENG-0042 --state .cyrion/community.sqlite --format markdown
+```
+
+`status --json` produces a stable machine-readable summary. Reports support
+`markdown` and `json` and include normalized findings and evidence metadata,
+but deliberately omit artifact bodies.
+
 ## Packages
 
 - `apps/cli` — Cyrion terminal application.
@@ -63,6 +75,7 @@ separate metadata record and is verified by SHA-256.
   budgets, and the scope-bound tool gateway.
 - `packages/evidence` — local artifact persistence, metadata, hashing, and
   integrity verification.
+- `packages/reporting` — versioned Markdown and JSON report generation.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
 - `agents` — intentionally concise public role prompts.
 - `fixtures` — non-destructive, deterministic demo engagements.
@@ -83,3 +96,5 @@ See [Assessment workflow](docs/ASSESSMENT.md) for fixture outcomes and the
 validation gate.
 See [Product terminal](docs/TERMINAL.md) for navigation, evidence inspection,
 responsive layouts, and `NO_COLOR` behavior.
+See [Installation](docs/INSTALLATION.md) and [Release process](docs/RELEASE.md)
+for the distributable bundle and clean-package verification flow.
