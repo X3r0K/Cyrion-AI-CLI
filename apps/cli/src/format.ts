@@ -34,6 +34,19 @@ export function formatMission(snapshot: EngagementSnapshot): StyledText {
   appendLine(chunks, [])
   appendLine(chunks, [dim("operator  >  "), plain(snapshot.manifest.objective)])
   appendLine(chunks, [accent("root      >  "), plain(missionSummary(snapshot))])
+  if (snapshot.pendingApproval) {
+    appendSection(chunks, "SUPERVISOR APPROVAL")
+    appendLine(chunks, [warning("◇ REVIEW REQUIRED"), dim(`  ${sanitizeTerminalText(snapshot.pendingApproval.id.slice(0, 8))}`)])
+    appendLine(chunks, [plain(sanitizeTerminalText(snapshot.pendingApproval.decision.action.rationale, 240))])
+    for (const task of snapshot.pendingApproval.decision.action.tasks) {
+      appendLine(chunks, [
+        accent(`${sanitizeTerminalText(task.id, 128)}  `),
+        plain(`${sanitizeTerminalText(task.role.toUpperCase(), 32)} → ${sanitizeTerminalText(task.target, 120)}`),
+      ])
+      appendLine(chunks, [dim("   capabilities  "), plain(sanitizeTerminalText(task.capabilities.join(", "), 240))])
+    }
+    appendLine(chunks, [success("[a] APPROVE"), dim("   "), fg(theme.danger)("[x] DENY")])
+  }
   appendSection(chunks, "PLAN")
   if (!snapshot.tasks.length) appendLine(chunks, [dim("No tasks delegated yet.")])
   for (const [index, task] of snapshot.tasks.entries()) {
@@ -238,6 +251,7 @@ export function formatCommandHelp(): StyledText {
   appendLine(chunks, [accent("Enter / e "), plain("Open supporting evidence")])
   appendLine(chunks, [accent("Tab / i   "), plain("Focus or leave Root chat")])
   appendLine(chunks, [accent("p         "), plain("Pause or resume dispatch")])
+  appendLine(chunks, [accent("a / x     "), plain("Approve or deny a supervised delegation")])
   appendLine(chunks, [accent("? / Ctrl+K"), plain("Toggle this command guide")])
   appendLine(chunks, [accent("q         "), plain("Quit and cancel active workers")])
   appendSection(chunks, "SAFETY", 28)
@@ -309,6 +323,8 @@ function missionSummary(snapshot: EngagementSnapshot): string {
   if (snapshot.status === "completed") return "Mission complete. Report and evidence are ready."
   if (snapshot.status === "cancelled") return "Mission cancelled. Active leases were released."
   if (snapshot.status === "paused") return "Dispatch paused by operator; active operations are visible."
+  if (snapshot.pendingApproval?.status === "pending") return "Root is waiting for supervisor approval before dispatch."
+  if (snapshot.pendingApproval?.status === "approved") return "Approved delegation is being committed to the task queue."
   const running = snapshot.tasks.filter((task) => task.status === "running").map((task) => task.role)
   if (running.length) return `${running.join(" + ")} workers are running in bounded sessions.`
   return "Building the next bounded dispatch decision."

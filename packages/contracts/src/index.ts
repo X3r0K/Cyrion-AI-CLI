@@ -118,6 +118,13 @@ export interface RootDecision {
   action: RootAction
 }
 
+export interface PendingApproval {
+  id: string
+  requestedAt: string
+  status: "pending" | "approved"
+  decision: RootDecision & { action: Extract<RootAction, { kind: "delegate" }> }
+}
+
 export type EventType =
   | "engagement.started"
   | "engagement.recovered"
@@ -128,6 +135,9 @@ export type EventType =
   | "engagement.failed"
   | "root.decision.proposed"
   | "root.decision.rejected"
+  | "root.decision.awaiting_approval"
+  | "root.decision.approved"
+  | "root.decision.denied"
   | "root.message"
   | "task.queued"
   | "task.started"
@@ -194,6 +204,7 @@ export interface EngagementSnapshot {
   findings: Finding[]
   evidence: EvidenceRef[]
   usage: ResourceUsage
+  pendingApproval?: PendingApproval
   events: CyrionEvent[]
 }
 
@@ -328,6 +339,21 @@ export function rootDecisionContractError(value: unknown): string | undefined {
 export function assertRootDecision(value: unknown): asserts value is RootDecision {
   const error = rootDecisionContractError(value)
   if (error) throw new Error(`Invalid RootDecision: ${error}`)
+}
+
+export function pendingApprovalContractError(value: unknown): string | undefined {
+  if (!isRecord(value)) return "approval must be an object"
+  const extra = unexpectedKey(value, ["id", "requestedAt", "status", "decision"])
+  if (extra) return `approval contains unexpected field ${extra}`
+  if (!validIdentifier(value.id)) return "approval.id is invalid"
+  if (typeof value.requestedAt !== "string" || !Number.isFinite(Date.parse(value.requestedAt))) {
+    return "approval.requestedAt is invalid"
+  }
+  if (value.status !== "pending" && value.status !== "approved") return "approval.status is invalid"
+  const decisionError = rootDecisionContractError(value.decision)
+  if (decisionError) return `approval decision is invalid: ${decisionError}`
+  const decision = value.decision as RootDecision
+  return decision.action.kind === "delegate" ? undefined : "approval decision must delegate tasks"
 }
 
 export function workerResultContractError(value: unknown): string | undefined {

@@ -4,6 +4,7 @@ import { join } from "node:path"
 import {
   CONTRACT_VERSION,
   assertManifest,
+  pendingApprovalContractError,
   resourceUsageContractError,
   rootDecisionContractError,
   workerResultContractError,
@@ -13,6 +14,7 @@ import {
   type EngagementSnapshot,
   type EventType,
   type Finding,
+  type PendingApproval,
   type RootDecision,
   type RootPlanner,
   type TaskRecord,
@@ -27,6 +29,7 @@ export interface ControllerOptions {
   toolGateway?: ScopedToolGateway
   leaseDurationMs?: number
   heartbeatIntervalMs?: number
+  autoApprove?: boolean
 }
 
 export class CyrionController {
@@ -37,9 +40,11 @@ export class CyrionController {
   readonly #toolGateway: ScopedToolGateway
   readonly #leaseDurationMs: number
   readonly #heartbeatIntervalMs: number
+  readonly #autoApprove: boolean
   #snapshot: EngagementSnapshot
   #paused = false
   #cancelled = false
+  #approvalWaiter: ((approved: boolean) => void) | undefined
 
   constructor(
     manifest: EngagementManifest,
@@ -56,6 +61,7 @@ export class CyrionController {
     this.#toolGateway = options.toolGateway ?? new ScopedToolGateway(manifest, {})
     this.#leaseDurationMs = options.leaseDurationMs ?? 5_000
     this.#heartbeatIntervalMs = options.heartbeatIntervalMs ?? 1_000
+    this.#autoApprove = options.autoApprove ?? false
     if (this.#leaseDurationMs < 100) throw new Error("Lease duration must be at least 100 milliseconds")
     if (this.#heartbeatIntervalMs < 25 || this.#heartbeatIntervalMs >= this.#leaseDurationMs) {
       throw new Error("Heartbeat interval must be at least 25ms and shorter than the lease")
@@ -75,6 +81,11 @@ export class CyrionController {
       usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
       events: [],
     }
+    this.#restoreTerminalStateFromEvents()
+    const storedApprovalError = this.#snapshot.pendingApproval
+      ? pendingApprovalContractError(this.#snapshot.pendingApproval)
+      : undefined
+    if (storedApprovalError) throw new Error(`Stored approval rejected: ${storedApprovalError}`)
   }
 
   get snapshot(): EngagementSnapshot {
@@ -93,6 +104,22 @@ export class CyrionController {
       while (!this.#cancelled) {
         await this.#waitWhilePaused()
         this.#enforceDeadline()
+
+        if (this.#snapshot.pendingApproval) {
+          const approvalRejection = this.#pendingApprovalError(this.#snapshot.pendingApproval)
+          if (approvalRejection) {
+            const approvalId = this.#snapshot.pendingApproval.id
+            this.#record("root.decision.rejected", { rejection: approvalRejection, approvalId }, "root-agent")
+            delete this.#snapshot.pendingApproval
+            this.#persist()
+            throw new Error(approvalRejection)
+          }
+          const approved = await this.#waitForApproval()
+          if (this.#cancelled || !approved) continue
+          this.#enforceDeadline()
+          this.#applyApprovedDecision()
+          continue
+        }
 
         if (await this.#runReadyTasks()) continue
 
@@ -113,7 +140,11 @@ export class CyrionController {
         }
 
         if (decision.action.kind === "delegate") {
-          for (const spec of decision.action.tasks) this.#queue(spec)
+          if (this.#snapshot.manifest.mode === "supervised") {
+            this.#requestApproval({ version: decision.version, action: decision.action })
+          } else {
+            for (const spec of decision.action.tasks) this.#queue(spec)
+          }
           continue
         }
 
@@ -165,8 +196,21 @@ export class CyrionController {
 
   async cancel(): Promise<void> {
     if (!["running", "paused"].includes(this.#snapshot.status)) return
-    this.#record("engagement.cancelled", { reason: "operator" }, "root-agent")
     this.#cancelled = true
+    if (this.#snapshot.pendingApproval) {
+      const approval = this.#snapshot.pendingApproval
+      if (approval.status === "pending") {
+        this.#record(
+          "root.decision.denied",
+          { approvalId: approval.id, reason: "Engagement cancelled by operator" },
+          "root-agent",
+        )
+      }
+      delete this.#snapshot.pendingApproval
+      this.#approvalWaiter?.(false)
+      this.#approvalWaiter = undefined
+    }
+    this.#record("engagement.cancelled", { reason: "operator" }, "root-agent")
     await Promise.all(
       this.#snapshot.agents
         .filter((agent) => agent.status === "running" && agent.role !== "root")
@@ -179,6 +223,43 @@ export class CyrionController {
       root.finishedAt = new Date().toISOString()
     }
     this.#persist()
+  }
+
+  approvePending(): boolean {
+    const approval = this.#snapshot.pendingApproval
+    if (!approval || approval.status !== "pending" || this.#cancelled) return false
+    approval.status = "approved"
+    const root = this.#snapshot.agents.find((agent) => agent.id === "root-agent")
+    if (root) root.status = "running"
+    this.#record(
+      "root.decision.approved",
+      { approvalId: approval.id, taskIds: approval.decision.action.tasks.map((task) => task.id) },
+      "root-agent",
+    )
+    this.#persist()
+    this.#approvalWaiter?.(true)
+    this.#approvalWaiter = undefined
+    return true
+  }
+
+  denyPending(reason = "Delegation denied by operator"): boolean {
+    const approval = this.#snapshot.pendingApproval
+    if (!approval || approval.status !== "pending" || this.#cancelled) return false
+    const cleanReason = boundedOperatorReason(reason)
+    this.#record("root.decision.denied", { approvalId: approval.id, reason: cleanReason }, "root-agent")
+    delete this.#snapshot.pendingApproval
+    this.#cancelled = true
+    this.#snapshot.status = "cancelled"
+    const root = this.#snapshot.agents.find((agent) => agent.id === "root-agent")
+    if (root) {
+      root.status = "cancelled"
+      root.finishedAt = new Date().toISOString()
+    }
+    this.#record("engagement.cancelled", { reason: "supervisor-denied" }, "root-agent")
+    this.#persist()
+    this.#approvalWaiter?.(false)
+    this.#approvalWaiter = undefined
+    return true
   }
 
   operatorMessage(content: string): void {
@@ -194,9 +275,11 @@ export class CyrionController {
       ? `Mission complete: ${this.#snapshot.tasks.length} tasks finished, ${confirmed} confirmed, ${unresolved} unresolved, ${this.#snapshot.evidence.length} artifacts captured.`
       : this.#snapshot.status === "paused"
         ? `Dispatch is paused. ${active.length ? `${active.join(" and ")} operations may still be settling.` : "No worker is active."}`
-        : active.length
-          ? `Root is coordinating ${active.join(" and ")}. Current record: ${confirmed} confirmed, ${unresolved} unresolved, ${this.#snapshot.evidence.length} artifacts.`
-          : `Root is preparing the next bounded decision. Current record: ${confirmed} confirmed and ${this.#snapshot.evidence.length} artifacts.`
+        : this.#snapshot.pendingApproval?.status === "pending"
+          ? `Root is waiting for supervisor approval of ${this.#snapshot.pendingApproval.decision.action.tasks.length} proposed task(s).`
+          : active.length
+            ? `Root is coordinating ${active.join(" and ")}. Current record: ${confirmed} confirmed, ${unresolved} unresolved, ${this.#snapshot.evidence.length} artifacts.`
+            : `Root is preparing the next bounded decision. Current record: ${confirmed} confirmed and ${this.#snapshot.evidence.length} artifacts.`
     this.#record("root.message", { content: response }, "root-agent")
   }
 
@@ -218,9 +301,10 @@ export class CyrionController {
     this.#record("engagement.recovered", { previousStatus: this.#snapshot.status }, "root-agent")
     this.#paused = false
     this.#snapshot.status = "running"
+    this.#restorePendingApprovalFromEvents()
     const root = this.#snapshot.agents.find((agent) => agent.id === "root-agent")
     if (root) {
-      root.status = "running"
+      root.status = this.#snapshot.pendingApproval?.status === "pending" ? "waiting" : "running"
       delete root.finishedAt
     } else {
       this.#snapshot.agents.unshift({
@@ -298,6 +382,59 @@ export class CyrionController {
     this.#persist()
   }
 
+  #restorePendingApprovalFromEvents(): void {
+    const events = this.events.list()
+    const awaiting = events.findLast((event) => event.type === "root.decision.awaiting_approval")
+    if (!awaiting) return
+    const approvalId = (awaiting.payload as { approvalId?: unknown }).approvalId
+    if (typeof approvalId !== "string") return
+    const resolution = events.findLast((event) => {
+      if (event.type !== "root.decision.approved" && event.type !== "root.decision.denied") return false
+      return (event.payload as { approvalId?: unknown }).approvalId === approvalId
+    })
+    if (resolution?.type === "root.decision.denied") {
+      if (this.#snapshot.pendingApproval?.id === approvalId) delete this.#snapshot.pendingApproval
+      return
+    }
+    if (this.#snapshot.pendingApproval?.id === approvalId) {
+      if (resolution?.type === "root.decision.approved") this.#snapshot.pendingApproval.status = "approved"
+      return
+    }
+    if (this.#snapshot.pendingApproval) return
+    const proposed = events.findLast((event) =>
+      event.type === "root.decision.proposed" && event.sequence < awaiting.sequence
+    )
+    if (!proposed || rootDecisionContractError(proposed.payload)) return
+    const decision = proposed.payload as RootDecision
+    if (decision.action.kind !== "delegate") return
+    this.#snapshot.pendingApproval = {
+      id: approvalId,
+      requestedAt: awaiting.timestamp,
+      status: resolution?.type === "root.decision.approved" ? "approved" : "pending",
+      decision: structuredClone({ version: decision.version, action: decision.action }),
+    }
+  }
+
+  #restoreTerminalStateFromEvents(): void {
+    const terminal = this.events.list().findLast((event) =>
+      event.type === "engagement.completed" || event.type === "engagement.cancelled"
+    )
+    if (!terminal || this.#snapshot.status === terminal.type.slice("engagement.".length)) return
+    const status = terminal.type === "engagement.completed" ? "completed" : "cancelled"
+    this.#snapshot.status = status
+    this.#snapshot.finishedAt = terminal.timestamp
+    delete this.#snapshot.pendingApproval
+    for (const task of this.#snapshot.tasks.filter((item) => item.status === "running")) {
+      task.status = "cancelled"
+      delete task.lease
+    }
+    for (const agent of this.#snapshot.agents.filter((item) => item.status === "running" || item.status === "waiting")) {
+      agent.status = status === "completed" && agent.role === "root" ? "completed" : "cancelled"
+      agent.finishedAt = terminal.timestamp
+    }
+    this.#persist()
+  }
+
   #record(type: EventType, payload: unknown, agentId?: string, taskId?: string): void {
     this.events.append({
       engagementId: this.#snapshot.manifest.id,
@@ -329,6 +466,72 @@ export class CyrionController {
       attempt: 0,
     })
     this.#persist()
+  }
+
+  #requestApproval(decision: RootDecision & { action: Extract<RootDecision["action"], { kind: "delegate" }> }): void {
+    const approval: PendingApproval = {
+      id: crypto.randomUUID(),
+      requestedAt: new Date().toISOString(),
+      status: "pending",
+      decision: structuredClone(decision),
+    }
+    this.#snapshot.pendingApproval = approval
+    const root = this.#snapshot.agents.find((agent) => agent.id === "root-agent")
+    if (root) root.status = "waiting"
+    this.#record(
+      "root.decision.awaiting_approval",
+      {
+        approvalId: approval.id,
+        rationale: decision.action.rationale,
+        tasks: decision.action.tasks.map(({ id, role, objective, target, capabilities }) => ({
+          id, role, objective, target, capabilities,
+        })),
+      },
+      "root-agent",
+    )
+    this.#persist()
+    if (this.#autoApprove) this.approvePending()
+  }
+
+  #waitForApproval(): Promise<boolean> {
+    const approval = this.#snapshot.pendingApproval
+    if (!approval) return Promise.resolve(false)
+    if (approval.status === "approved") return Promise.resolve(true)
+    if (this.#autoApprove) return Promise.resolve(this.approvePending())
+    return new Promise((resolve) => {
+      this.#approvalWaiter = resolve
+    })
+  }
+
+  #applyApprovedDecision(): void {
+    const approval = this.#snapshot.pendingApproval
+    if (!approval || approval.status !== "approved") return
+    for (const spec of approval.decision.action.tasks) {
+      const existing = this.#snapshot.tasks.find((task) => task.id === spec.id)
+      if (existing) {
+        if (existing.inputHash !== taskInputHash(spec)) throw new Error(`Approved task identity mismatch: ${spec.id}`)
+        continue
+      }
+      this.#queue(spec)
+    }
+    delete this.#snapshot.pendingApproval
+    this.#persist()
+  }
+
+  #pendingApprovalError(approval: PendingApproval): string | undefined {
+    const contractRejection = pendingApprovalContractError(approval)
+    if (contractRejection) return `Stored approval rejected: ${contractRejection}`
+    const missing: TaskSpec[] = []
+    for (const spec of approval.decision.action.tasks) {
+      const existing = this.#snapshot.tasks.find((task) => task.id === spec.id)
+      if (!existing) missing.push(spec)
+      else if (existing.inputHash !== taskInputHash(spec)) return `Approved task identity mismatch: ${spec.id}`
+    }
+    if (!missing.length) return undefined
+    return this.#validateDecision({
+      version: approval.decision.version,
+      action: { ...approval.decision.action, tasks: missing },
+    })
   }
 
   async #runReadyTasks(): Promise<boolean> {
@@ -667,4 +870,12 @@ function hasDependencyCycle(graph: ReadonlyMap<string, readonly string[]>): bool
     return false
   }
   return [...graph.keys()].some(visit)
+}
+
+function boundedOperatorReason(reason: string): string {
+  const clean = reason
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .trim()
+    .slice(0, 1_024)
+  return clean || "Delegation denied by operator"
 }

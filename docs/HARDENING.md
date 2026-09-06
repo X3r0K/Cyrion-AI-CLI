@@ -37,6 +37,8 @@ testing, but it is not presented as a network sandbox.
 | Provider returns malformed or opaque fields | Runtime contract parser | Yes |
 | Worker forges target, source, or finding status | Controller result policy | Yes |
 | Root creates a cyclic task graph | Controller decision policy | Yes |
+| Supervised Root dispatches without approval | Durable controller approval gate | Yes |
+| Stored approval is changed before restart | Contract, policy, and task identity revalidation | Yes |
 
 ## Remaining boundary
 

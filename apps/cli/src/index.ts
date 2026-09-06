@@ -12,6 +12,7 @@ export const CLI_VERSION = "0.1.0-alpha.1"
 
 interface StatusSummary {
   status: EngagementSnapshot["status"]
+  mode: EngagementManifest["mode"]
   scenario?: string
   engagementId: string
   agents: number
@@ -21,6 +22,7 @@ interface StatusSummary {
   rejected: number
   inconclusive: number
   evidence: number
+  approval?: "pending" | "approved"
 }
 
 const args = process.argv.slice(2)
@@ -51,6 +53,15 @@ async function runDemo(): Promise<void> {
     : join(projectRoot, "fixtures/scenarios", `${scenario}.json`)
   const manifest = await Bun.file(manifestPath).json()
   assertManifest(manifest)
+  const mode = readFlag("--mode")
+  if (mode && mode !== "autonomous" && mode !== "supervised") {
+    throw new Error("--mode must be autonomous or supervised")
+  }
+  if (mode) manifest.mode = mode === "supervised" ? "supervised" : "autonomous"
+  const autoApprove = args.includes("--approve-all")
+  if (headless && manifest.mode === "supervised" && !autoApprove) {
+    throw new Error("Headless supervised mode requires --approve-all; interactive approval needs a TTY")
+  }
   const stateArgument = readFlag("--state")
   const artifactArgument = readFlag("--artifacts") ?? ".cyrion/artifacts"
   const store = stateArgument
@@ -70,7 +81,7 @@ async function runDemo(): Promise<void> {
     new FixtureAgentRuntime({ scenario: scenario as FixtureScenario, evidenceStore }),
     new FixtureRootPlanner(),
     join(projectRoot, "agents"),
-    { ...(store ? { store } : {}), toolGateway },
+    { ...(store ? { store } : {}), toolGateway, autoApprove },
   )
 
   if (headless) {
@@ -96,6 +107,8 @@ function runStatus(): void {
     console.log([
       `CYRION/AI  ${terminalSafe(summary.engagementId)}`,
       `status       ${summary.status.toUpperCase()}`,
+      `mode         ${summary.mode.toUpperCase()}`,
+      ...(summary.approval ? [`approval     ${summary.approval.toUpperCase()}`] : []),
       `target       ${terminalSafe(snapshot.manifest.scope.targets.join(", "))}`,
       `tasks        ${summary.completedTasks}/${summary.tasks} completed`,
       `findings     ${summary.confirmed} confirmed / ${summary.rejected} rejected / ${summary.inconclusive} inconclusive`,
@@ -136,6 +149,7 @@ function readDurableSnapshot(): { snapshot: EngagementSnapshot; close: () => voi
 function statusSummary(snapshot: EngagementSnapshot, scenario?: string): StatusSummary {
   return {
     status: snapshot.status,
+    mode: snapshot.manifest.mode,
     ...(scenario ? { scenario } : {}),
     engagementId: snapshot.manifest.id,
     agents: snapshot.agents.length,
@@ -145,6 +159,7 @@ function statusSummary(snapshot: EngagementSnapshot, scenario?: string): StatusS
     rejected: snapshot.findings.filter((finding) => finding.status === "rejected").length,
     inconclusive: snapshot.findings.filter((finding) => finding.status === "inconclusive").length,
     evidence: snapshot.evidence.length,
+    ...(snapshot.pendingApproval ? { approval: snapshot.pendingApproval.status } : {}),
   }
 }
 
@@ -181,11 +196,13 @@ function usage(): string {
     `CYRION/AI Community ${CLI_VERSION}`,
     "",
     "Usage:",
-    "  cyrion demo [--headless] [--fixture <scenario>] [--state <sqlite-path>] [--artifacts <directory>]",
+    "  cyrion demo [--headless] [--fixture <scenario>] [--mode autonomous|supervised] [--approve-all]",
+    "              [--state <sqlite-path>] [--artifacts <directory>]",
     "  cyrion status <engagement-id> --state <sqlite-path> [--json]",
     "  cyrion report <engagement-id> --state <sqlite-path> [--format markdown|json]",
     "  cyrion version",
     "",
     "Fixture scenarios: known-positive, clean, rejected, incomplete",
+    "Headless supervised runs require --approve-all.",
   ].join("\n")
 }

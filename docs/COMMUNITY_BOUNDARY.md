@@ -8,6 +8,7 @@ proprietary operating methodology.
 - Engagement, task, result, event, evidence, and finding contracts.
 - Root's typed decision protocol and scheduler validation.
 - Separate agent sessions, cancellation, pause/resume, leases, and budgets.
+- Durable supervised approval for every Root delegation.
 - Generic Recon, Web, API, Validator, and Reporter roles.
 - Local evidence storage and transparent status UI.
 - Versioned local status and report exports that omit artifact bodies.

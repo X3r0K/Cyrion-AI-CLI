@@ -30,6 +30,10 @@ dispatch, and `q` to quit. If work is still active, `q` cancels the leased
 workers before returning control to the shell. Press `?` for the full keyboard
 reference.
 
+Exercise the durable supervisor gate with `bun run demo -- --mode supervised`.
+Every Root delegation must be approved with `a` or denied with `x` before tasks
+are queued. Headless fixture runs require the explicit `--approve-all` flag.
+
 To exercise durable state and restart-safe task reconciliation, provide a local
 SQLite path:
 
@@ -103,3 +107,5 @@ See [Post-alpha hardening](docs/HARDENING.md) for the subprocess threat model,
 failure matrix, and remaining container/egress boundary.
 See [Untrusted output boundary](docs/OUTPUT-BOUNDARY.md) for runtime contract,
 provenance, and finding-transition enforcement.
+See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
+headless safeguards, audit events, and restart behavior.

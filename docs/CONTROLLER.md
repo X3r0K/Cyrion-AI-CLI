@@ -30,6 +30,9 @@ worker execution.
   validation transitions are independently enforced by the controller.
 - Invalid results emit a bounded `task.result.rejected` audit event without
   persisting the rejected provider payload.
+- Supervised manifests hold every valid Root delegation behind a durable
+  approve-or-deny gate. Recovered approvals are policy-checked again before
+  task queue mutation.
 
 ## Persistence modes
 

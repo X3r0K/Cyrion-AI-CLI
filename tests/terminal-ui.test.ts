@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
-import { assertManifest, type EngagementManifest, type EngagementSnapshot } from "@cyrion/contracts"
+import { CONTRACT_VERSION, assertManifest, type EngagementManifest, type EngagementSnapshot } from "@cyrion/contracts"
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway } from "@cyrion/controller"
 import { MemoryEvidenceStore } from "@cyrion/evidence"
 import { FixtureAgentRuntime, FixtureToolAdapter } from "@cyrion/runtime-opencode"
@@ -94,6 +94,40 @@ describe("product terminal state", () => {
     expect(snapshot.events.some((event) => event.type === "engagement.paused")).toBe(true)
     expect(snapshot.events.some((event) => event.type === "engagement.resumed")).toBe(true)
     controller.close()
+  })
+
+  test("renders a pending supervised delegation with non-color controls", async () => {
+    const snapshot = await completedSnapshot()
+    snapshot.status = "running"
+    snapshot.pendingApproval = {
+      id: "APPROVAL-UI",
+      requestedAt: new Date().toISOString(),
+      status: "pending",
+      decision: {
+        version: CONTRACT_VERSION,
+        action: {
+          kind: "delegate",
+          rationale: "Review the bounded fixture task.",
+          tasks: [{
+            id: "T-APPROVAL",
+            key: "approval:demo.lab.test",
+            role: "web",
+            objective: "Review one fixture.",
+            target: "demo.lab.test",
+            capabilities: ["fixture.read"],
+            dependencies: [],
+            depth: 1,
+            expectedOutput: "assessment",
+          }],
+        },
+      },
+    }
+
+    const mission = plainText(formatMission(snapshot))
+    expect(mission).toContain("SUPERVISOR APPROVAL")
+    expect(mission).toContain("[a] APPROVE")
+    expect(mission).toContain("[x] DENY")
+    expect(mission).toContain("fixture.read")
   })
 })
 

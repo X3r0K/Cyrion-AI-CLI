@@ -4,6 +4,8 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Implemented durable supervised delegation with interactive approve/deny
+  controls, explicit headless opt-in, audit events, and restart revalidation.
 - Added strict runtime parsing for manifests, Root decisions, worker results,
   evidence metadata, findings, and provider usage.
 - Bound worker output to task targets and agent provenance, enforced fresh

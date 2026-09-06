@@ -27,6 +27,10 @@ spawn processes or widen scope. The controller accepts or rejects each typed
 decision, owns concurrency and lifecycle, and records an event before applying
 state.
 
+In supervised mode, a valid Root delegation becomes a durable pending approval
+instead of entering the task queue. Only the controller can commit an approved
+proposal, and it revalidates recovered approvals before applying missing tasks.
+
 ## Prompt boundaries
 
 Each model call is assembled from three explicit layers:

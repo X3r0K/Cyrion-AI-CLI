@@ -48,6 +48,22 @@ try {
     throw new Error("Packed known-positive demo did not produce the expected result")
   }
 
+  const supervised = await run([
+    "bun", executable, "demo", "--headless", "--fixture", "clean",
+    "--mode", "supervised", "--approve-all",
+    "--state", join(sandbox, "supervised.sqlite"),
+    "--artifacts", join(sandbox, "supervised-artifacts"),
+  ], sandbox)
+  const supervisedLines = supervised.trim().split("\n")
+  const supervisedSummary = JSON.parse(supervisedLines.at(-1) ?? "null") as { status?: string }
+  if (
+    supervisedSummary.status !== "completed"
+    || !supervisedLines.some((line) => line.includes('"type":"root.decision.awaiting_approval"'))
+    || !supervisedLines.some((line) => line.includes('"type":"root.decision.approved"'))
+  ) {
+    throw new Error("Packed supervised demo did not exercise the approval gate")
+  }
+
   const status = await run(["bun", executable, "status", "ENG-0042", "--state", statePath, "--json"], sandbox)
   const statusResult = JSON.parse(status) as { status?: string; evidence?: number }
   if (statusResult.status !== "completed" || statusResult.evidence !== 6) {

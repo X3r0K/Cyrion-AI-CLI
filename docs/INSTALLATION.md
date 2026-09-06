@@ -47,3 +47,17 @@ cyrion report ENG-0042 --state .cyrion/community.sqlite --format markdown
 
 The report command emits to standard output so operators can explicitly choose
 the destination and overwrite behavior with normal shell redirection.
+
+## Supervised fixture run
+
+Interactive runs use `a` and `x` to approve or deny each Root delegation:
+
+```bash
+cyrion demo --mode supervised
+```
+
+Non-interactive fixture automation must acknowledge automatic approval:
+
+```bash
+cyrion demo --headless --mode supervised --approve-all
+```

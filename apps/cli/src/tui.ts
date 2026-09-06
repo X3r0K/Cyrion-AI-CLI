@@ -62,7 +62,7 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
     content: t`${bold(fg(theme.accent)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
   })
   const headerMeta = new TextRenderable(renderer, {
-    content: `DEMO / LAB  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.scope.targets[0]}  |  AUTONOMOUS`,
+    content: `DEMO / LAB  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.scope.targets[0]}  |  ${controller.snapshot.manifest.mode.toUpperCase()}`,
     fg: theme.muted,
   })
   header.add(brand)
@@ -216,7 +216,9 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
     shortcutText.visible = renderer.width >= 98
     shortcutText.content = ui.inputMode === "chat"
       ? "[Enter] Send  [Esc/Tab] Navigate"
-      : "[↑↓] Select  [Enter] Inspect  [i] Chat  [p] Pause  [?] Help  [q] Quit"
+      : snapshot.pendingApproval?.status === "pending"
+        ? "[a] Approve  [x] Deny  [?] Details  [q] Quit"
+        : "[↑↓] Select  [Enter] Inspect  [i] Chat  [p] Pause  [?] Help  [q] Quit"
     prompt.content = ui.inputMode === "chat" ? "root >" : "nav  >"
     prompt.fg = ui.inputMode === "chat" ? theme.accent : theme.warning
     input.placeholder = ui.inputMode === "chat"
@@ -291,6 +293,20 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
       key.preventDefault()
       key.stopPropagation()
       setChatMode(true)
+      return
+    }
+    if (key.name === "a" && controller.snapshot.pendingApproval?.status === "pending") {
+      controller.approvePending()
+      key.preventDefault()
+      key.stopPropagation()
+      render()
+      return
+    }
+    if (key.name === "x" && controller.snapshot.pendingApproval?.status === "pending") {
+      controller.denyPending()
+      key.preventDefault()
+      key.stopPropagation()
+      render()
       return
     }
     if (key.name === "p") {

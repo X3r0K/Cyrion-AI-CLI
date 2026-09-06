@@ -25,8 +25,10 @@ of thought or an authorization channel.
 
 `p` pauses or resumes dispatch. Pausing prevents the controller from assigning
 new work but does not pretend an already-running provider request stopped
-instantly. `q` closes the terminal and asks the controller to cancel active
-workers. Use `--state <path>` to make restart reconciliation durable.
+instantly. In supervised mode, `a` approves the pending Root delegation and `x`
+denies it without dispatching the proposed tasks. `q` closes the terminal and
+asks the controller to cancel active workers. Use `--state <path>` to make
+restart reconciliation durable.
 
 ## Evidence safety
 
