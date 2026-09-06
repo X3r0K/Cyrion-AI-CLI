@@ -1,0 +1,10 @@
+{
+  "name": "@cyrion/runtime-opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@cyrion/contracts": "workspace:*",
+    "@opencode-ai/sdk": "1.18.29"
+  }
+}

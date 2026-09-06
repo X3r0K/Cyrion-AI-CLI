@@ -1,0 +1,12 @@
+{
+  "name": "@cyrion/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "cyrion": "./src/index.ts" },
+  "dependencies": {
+    "@cyrion/contracts": "workspace:*",
+    "@cyrion/controller": "workspace:*",
+    "@cyrion/runtime-opencode": "workspace:*",
+    "@opentui/core": "0.5.10"
+  }
+}
