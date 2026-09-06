@@ -113,14 +113,12 @@ export function formatFindingDetail(snapshot: EngagementSnapshot): StyledText {
   appendKeyValue(chunks, "Validated", finding.validatedBy ?? "pending")
   appendLine(chunks, [dim("Verdict       "), fg(findingColor(finding.status))(finding.status.toUpperCase())])
   appendSection(chunks, "VALIDATION", 30)
-  appendLine(chunks, [
-    finding.status === "confirmed" ? success("■ REPRODUCTION PASS") : warning("■ REPRODUCTION PENDING"),
-  ])
+  appendLine(chunks, [validationVerdict(finding.status)])
   appendLine(chunks, [dim("Fresh evidence  "), plain(`${finding.evidenceIds.length} artifacts`)])
   appendSection(chunks, "EVIDENCE", 30)
   for (const id of finding.evidenceIds) appendLine(chunks, [accent("■ "), plain(`${id}  linked artifact`)])
   appendSection(chunks, "REMEDIATION", 30)
-  appendLine(chunks, [plain("Enforce object-level authorization for every request.")], false)
+  appendLine(chunks, [plain(remediationFor(finding.status))], false)
   return new StyledText(chunks)
 }
 
@@ -178,6 +176,9 @@ export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
   appendSection(chunks, "COUNTS", 28)
   appendLine(chunks, [success("■ "), plain(`${snapshot.findings.filter((item) => item.status === "confirmed").length} confirmed`)])
   appendLine(chunks, [warning("■ "), plain(`${snapshot.findings.filter((item) => item.status === "candidate").length} candidate`)])
+  appendLine(chunks, [warning("◆ "), plain(`${snapshot.findings.filter((item) => item.status === "validating").length} validating`)])
+  appendLine(chunks, [fg(theme.danger)("■ "), plain(`${snapshot.findings.filter((item) => item.status === "rejected").length} rejected`)])
+  appendLine(chunks, [warning("◇ "), plain(`${snapshot.findings.filter((item) => item.status === "inconclusive").length} inconclusive`)])
   appendLine(chunks, [accent("■ "), plain(`${snapshot.evidence.length} artifacts`)], false)
   return new StyledText(chunks)
 }
@@ -194,7 +195,10 @@ function missionSummary(snapshot: EngagementSnapshot): string {
 function countFindings(findings: Finding[]): string {
   const confirmed = findings.filter((finding) => finding.status === "confirmed").length
   const candidate = findings.filter((finding) => finding.status === "candidate").length
-  return `${confirmed} confirmed / ${candidate} candidate`
+  const validating = findings.filter((finding) => finding.status === "validating").length
+  const rejected = findings.filter((finding) => finding.status === "rejected").length
+  const inconclusive = findings.filter((finding) => finding.status === "inconclusive").length
+  return `${confirmed} confirmed / ${candidate} candidate / ${validating} validating / ${rejected} rejected / ${inconclusive} inconclusive`
 }
 
 const plain = (value: string): TextChunk => fg(theme.text)(value)
@@ -274,6 +278,20 @@ function findingColor(value: Finding["status"]): string {
   if (value === "rejected") return theme.danger
   if (value === "candidate") return theme.warning
   return theme.dim
+}
+
+function validationVerdict(value: Finding["status"]): TextChunk {
+  if (value === "confirmed") return success("■ REPRODUCTION PASS")
+  if (value === "rejected") return fg(theme.danger)("■ REPRODUCTION REJECTED")
+  if (value === "inconclusive") return warning("◇ REPRODUCTION INCONCLUSIVE")
+  return warning("◇ REPRODUCTION PENDING")
+}
+
+function remediationFor(value: Finding["status"]): string {
+  if (value === "confirmed") return "Enforce object-level authorization for every request."
+  if (value === "rejected") return "No remediation required; preserve the validation record."
+  if (value === "inconclusive") return "Collect fresh comparison evidence before reporting."
+  return "Await independent validation before recommending a change."
 }
 
 function severityColor(value: Finding["severity"]): string {

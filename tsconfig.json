@@ -12,6 +12,7 @@
     "paths": {
       "@cyrion/contracts": ["packages/contracts/src/index.ts"],
       "@cyrion/controller": ["packages/controller/src/index.ts"],
+      "@cyrion/evidence": ["packages/evidence/src/index.ts"],
       "@cyrion/runtime-opencode": ["packages/runtime-opencode/src/index.ts"]
     }
   },

@@ -13,6 +13,20 @@
         "typescript": "5.9.2",
       },
     },
+    "apps/cli": {
+      "name": "@cyrion/cli",
+      "version": "0.1.0",
+      "bin": {
+        "cyrion": "./src/index.ts",
+      },
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/controller": "workspace:*",
+        "@cyrion/evidence": "workspace:*",
+        "@cyrion/runtime-opencode": "workspace:*",
+        "@opentui/core": "0.5.10",
+      },
+    },
     "packages/contracts": {
       "name": "@cyrion/contracts",
       "version": "0.1.0",
@@ -24,11 +38,33 @@
         "@cyrion/contracts": "workspace:*",
       },
     },
+    "packages/evidence": {
+      "name": "@cyrion/evidence",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime-opencode": {
+      "name": "@cyrion/runtime-opencode",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/evidence": "workspace:*",
+        "@opencode-ai/sdk": "1.18.29",
+      },
+    },
   },
   "packages": {
+    "@cyrion/cli": ["@cyrion/cli@workspace:apps/cli"],
+
     "@cyrion/contracts": ["@cyrion/contracts@workspace:packages/contracts"],
 
     "@cyrion/controller": ["@cyrion/controller@workspace:packages/controller"],
+
+    "@cyrion/evidence": ["@cyrion/evidence@workspace:packages/evidence"],
+
+    "@cyrion/runtime-opencode": ["@cyrion/runtime-opencode@workspace:packages/runtime-opencode"],
 
     "@opencode-ai/sdk": ["@opencode-ai/sdk@1.18.29", "", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-4CS+FoLPkymTlcga8jxivGDDb2AbWMIIl3b8+myoe2wtv/1ANYCErslgz1xy5hTVHymWE6CtVNKzRuPU0ED57A=="],
 

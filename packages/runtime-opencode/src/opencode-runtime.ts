@@ -134,6 +134,7 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
       target: task.target,
       dependencies: task.dependencies,
       expectedOutput: task.expectedOutput,
+      findingId: task.findingId,
     }
     const response = await this.#prompt(
       context.agentId,

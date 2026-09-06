@@ -6,6 +6,7 @@
   "dependencies": {
     "@cyrion/contracts": "workspace:*",
     "@cyrion/controller": "workspace:*",
+    "@cyrion/evidence": "workspace:*",
     "@cyrion/runtime-opencode": "workspace:*",
     "@opentui/core": "0.5.10"
   }

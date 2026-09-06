@@ -279,6 +279,14 @@ export class CyrionController {
   }
 
   #queue(spec: TaskSpec): void {
+    if (spec.role === "validator" && spec.findingId) {
+      const finding = this.#snapshot.findings.find((item) => item.id === spec.findingId)
+      if (finding && finding.status === "candidate") {
+        const validating = { ...finding, status: "validating" as const }
+        this.#record("finding.updated", { finding: validating, previousStatus: finding.status }, "root-agent", spec.id)
+        Object.assign(finding, validating)
+      }
+    }
     this.#record("task.queued", { task: spec }, "root-agent", spec.id)
     this.#snapshot.tasks.push({
       ...structuredClone(spec),
@@ -475,6 +483,7 @@ export function taskInputHash(task: TaskSpec): string {
     dependencies: [...task.dependencies].sort(),
     depth: task.depth,
     expectedOutput: task.expectedOutput,
+    findingId: task.findingId ?? null,
   }
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex")
 }

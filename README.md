@@ -40,12 +40,27 @@ redispatching its tasks. If a process stops while a task is leased, the next run
 records a recovery event, invalidates the stale lease, and retries the same task
 identity with an incremented attempt number.
 
+The assessment workflow includes four harmless, deterministic scenarios:
+
+```bash
+bun run demo:headless --fixture known-positive
+bun run demo:headless --fixture clean
+bun run demo:headless --fixture rejected
+bun run demo:headless --fixture incomplete
+```
+
+Evidence and report artifacts are written under `.cyrion/artifacts` by default.
+Use `--artifacts <directory>` to select another location. Every artifact has a
+separate metadata record and is verified by SHA-256.
+
 ## Packages
 
 - `apps/cli` — Cyrion terminal application.
 - `packages/contracts` — public, versioned engagement/task/event contracts.
 - `packages/controller` — Root decision loop, scheduler, SQLite state, leases,
   budgets, and the scope-bound tool gateway.
+- `packages/evidence` — local artifact persistence, metadata, hashing, and
+  integrity verification.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
 - `agents` — intentionally concise public role prompts.
 - `fixtures` — non-destructive, deterministic demo engagements.
@@ -62,3 +77,5 @@ network tooling requires an isolated worker adapter and explicit scope policy.
 
 See [Controller and execution](docs/CONTROLLER.md) for the durable-state and
 tool-gateway guarantees and their current limitations.
+See [Assessment workflow](docs/ASSESSMENT.md) for fixture outcomes and the
+validation gate.

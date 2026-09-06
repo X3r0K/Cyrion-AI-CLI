@@ -19,7 +19,7 @@ operator + manifest
                  |                 |                 |
                  +------ structured results --------+
                                    |
-                           evidence + report
+                    local evidence + report
 ```
 
 The Root is an orchestration role. It proposes actions but cannot directly
@@ -64,3 +64,11 @@ worker input or tool output.
 Provider-reported token and cost usage is accumulated into the engagement and
 checked against the manifest. The remaining budget passed to each worker is
 calculated from measured use and elapsed wall time.
+
+## Evidence boundary
+
+Workers return normalized evidence references rather than embedding artifacts
+in controller state. The local evidence store writes an immutable-intent
+artifact and a separate metadata record, both with owner-only file permissions.
+References use portable `artifact://` URIs; SHA-256 and byte length allow the
+controller, reporter, or operator to detect missing or modified content.

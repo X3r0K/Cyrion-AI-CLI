@@ -1,0 +1,21 @@
+{
+  "id": "ENG-CLEAN",
+  "name": "Community clean fixture",
+  "objective": "Assess a controlled fixture with policy-consistent responses.",
+  "profile": "web-api",
+  "mode": "autonomous",
+  "scope": {
+    "targets": ["demo.lab.test", "api.demo.lab.test"],
+    "excluded": [],
+    "capabilities": ["fixture.read", "fixture.compare"]
+  },
+  "budgets": {
+    "maxConcurrentAgents": 3,
+    "maxAgents": 6,
+    "maxDepth": 1,
+    "maxTasks": 8,
+    "maxDurationMs": 60000,
+    "maxTokens": 50000,
+    "maxCostUsd": 1
+  }
+}

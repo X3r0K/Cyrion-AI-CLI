@@ -43,6 +43,7 @@ export interface TaskSpec {
   dependencies: string[]
   depth: number
   expectedOutput: "inventory" | "assessment" | "validation" | "report"
+  findingId?: string
 }
 
 export interface EvidenceRef {
@@ -51,6 +52,25 @@ export interface EvidenceRef {
   uri: string
   sha256: string
   capturedAt: string
+  source?: string
+  contentType?: string
+  sizeBytes?: number
+}
+
+export interface EvidenceCapture {
+  engagementId: string
+  id: string
+  kind: EvidenceRef["kind"]
+  content: string
+  contentType: string
+  source: string
+  extension?: string
+}
+
+export interface EvidenceStore {
+  capture(input: EvidenceCapture): Promise<EvidenceRef>
+  read(reference: EvidenceRef): Promise<Uint8Array>
+  verify(reference: EvidenceRef): Promise<boolean>
 }
 
 export interface Observation {

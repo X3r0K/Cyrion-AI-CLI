@@ -5,6 +5,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@cyrion/contracts": "workspace:*",
+    "@cyrion/evidence": "workspace:*",
     "@opencode-ai/sdk": "1.18.29"
   }
 }
