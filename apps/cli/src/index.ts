@@ -5,7 +5,7 @@ import { assertManifest, type EngagementManifest, type EngagementSnapshot } from
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
 import { renderJsonReport, renderMarkdownReport } from "@cyrion/reporting"
-import { FixtureAgentRuntime, FixtureToolAdapter, type FixtureScenario } from "@cyrion/runtime-opencode"
+import { FixtureAgentRuntime, IsolatedFixtureToolAdapter, type FixtureScenario } from "@cyrion/runtime-opencode"
 import { runTui } from "./tui"
 
 export const CLI_VERSION = "0.1.0-alpha.1"
@@ -57,7 +57,10 @@ async function runDemo(): Promise<void> {
     ? new SQLiteEngagementStore(absolute(stateArgument), manifest.id)
     : undefined
   const evidenceStore = new LocalEvidenceStore(absolute(artifactArgument))
-  const fixtureAdapter = new FixtureToolAdapter()
+  const fixtureAdapter = new IsolatedFixtureToolAdapter(
+    join(projectRoot, "workers/fixture-worker.ts"),
+    manifest.scope.targets,
+  )
   const toolGateway = new ScopedToolGateway(manifest, {
     "fixture.read": fixtureAdapter,
     "fixture.compare": fixtureAdapter,

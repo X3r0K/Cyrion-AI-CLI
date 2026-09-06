@@ -77,6 +77,7 @@ but deliberately omit artifact bodies.
   integrity verification.
 - `packages/reporting` — versioned Markdown and JSON report generation.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
+- `workers` — credential-scrubbed subprocess entrypoints for safe fixture capabilities.
 - `agents` — intentionally concise public role prompts.
 - `fixtures` — non-destructive, deterministic demo engagements.
 
@@ -98,3 +99,5 @@ See [Product terminal](docs/TERMINAL.md) for navigation, evidence inspection,
 responsive layouts, and `NO_COLOR` behavior.
 See [Installation](docs/INSTALLATION.md) and [Release process](docs/RELEASE.md)
 for the distributable bundle and clean-package verification flow.
+See [Post-alpha hardening](docs/HARDENING.md) for the subprocess threat model,
+failure matrix, and remaining container/egress boundary.

@@ -16,6 +16,7 @@
     "dist/",
     "agents/",
     "fixtures/",
+    "workers/",
     "docs/",
     "README.md",
     "LICENSE",

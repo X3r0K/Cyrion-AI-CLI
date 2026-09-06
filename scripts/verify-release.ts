@@ -28,6 +28,7 @@ try {
   await stat(executable)
   await stat(join(packageRoot, "agents/root/system.md"))
   await stat(join(packageRoot, "fixtures/manifest.json"))
+  await stat(join(packageRoot, "workers/fixture-worker.ts"))
 
   const packageMetadata = await Bun.file(join(packageRoot, "package.json")).json() as { version?: string }
   const version = (await run(["bun", executable, "version"], sandbox)).trim()

@@ -2,6 +2,14 @@
 
 All notable changes to Cyrion Community are documented here.
 
+## Unreleased
+
+- Run fixture capabilities in short-lived subprocesses with a scrubbed
+  environment, private work directory, bounded streams, and abort-driven
+  termination.
+- Added explicit hardening tests and documentation for the remaining
+  container/egress boundary.
+
 ## 0.1.0-alpha.1 — 2026-09-06
 
 - Added the durable Root controller, task leases, budgets, event persistence,

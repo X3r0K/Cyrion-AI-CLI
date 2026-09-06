@@ -41,12 +41,15 @@ during resume.
 
 ## Current isolation boundary
 
-The gateway is an authorization and resource boundary, but the fixture adapter
-still executes inside the CLI process. Real network or shell capabilities are
-not included yet. Before such adapters are enabled, they must run in a separate
-worker process or container with minimal mounts, process-group cancellation,
-and egress controls that independently enforce targets across redirects and DNS
-changes.
+The gateway is an authorization and resource boundary. Fixture capabilities now
+execute in short-lived subprocesses with a private temporary directory, explicit
+credential-free environment, bounded output, and abort-driven termination. The
+worker independently validates its harmless fixture target and capability.
+
+This is not a container or network sandbox. Real network or shell capabilities
+are not included. Before such adapters are enabled, they must use minimal mounts,
+process-group cancellation, and egress controls that independently enforce
+targets across redirects and DNS changes.
 
 Provider requests may continue briefly after an abort. The controller records
 measured usage returned by OpenCode, but a provider-side hard spending limit is
