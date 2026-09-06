@@ -152,9 +152,28 @@ export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
   appendSection(chunks, "BUDGET", 28)
   appendBudget(chunks, "Agents", snapshot.agents.length, snapshot.manifest.budgets.maxAgents)
   appendBudget(chunks, "Tasks", snapshot.tasks.length, snapshot.manifest.budgets.maxTasks)
-  appendBudget(chunks, "Time", elapsed * 1000, snapshot.manifest.budgets.maxDurationMs, `${minutes}:${seconds}`)
-  appendUnavailableBudget(chunks, "Tokens", compactNumber(snapshot.manifest.budgets.maxTokens))
-  appendUnavailableBudget(chunks, "Cost", `$${snapshot.manifest.budgets.maxCostUsd.toFixed(2)}`)
+  appendBudget(
+    chunks,
+    "Time",
+    elapsed * 1000,
+    snapshot.manifest.budgets.maxDurationMs,
+    `${minutes}:${seconds}/${formatDuration(snapshot.manifest.budgets.maxDurationMs)}`,
+  )
+  const tokens = snapshot.usage.inputTokens + snapshot.usage.outputTokens
+  appendBudget(
+    chunks,
+    "Tokens",
+    tokens,
+    snapshot.manifest.budgets.maxTokens,
+    `${compactNumber(tokens)}/${compactNumber(snapshot.manifest.budgets.maxTokens)}`,
+  )
+  appendBudget(
+    chunks,
+    "Cost",
+    snapshot.usage.costUsd,
+    snapshot.manifest.budgets.maxCostUsd,
+    `$${snapshot.usage.costUsd.toFixed(2)}/$${snapshot.manifest.budgets.maxCostUsd.toFixed(2)}`,
+  )
   appendKeyValue(chunks, "Parallel", String(snapshot.manifest.budgets.maxConcurrentAgents))
   appendSection(chunks, "COUNTS", 28)
   appendLine(chunks, [success("■ "), plain(`${snapshot.findings.filter((item) => item.status === "confirmed").length} confirmed`)])
@@ -165,6 +184,7 @@ export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
 
 function missionSummary(snapshot: EngagementSnapshot): string {
   if (snapshot.status === "completed") return "Mission complete. Report and evidence are ready."
+  if (snapshot.status === "cancelled") return "Mission cancelled. Active leases were released."
   if (snapshot.status === "paused") return "Dispatch paused by operator; active operations are visible."
   const running = snapshot.tasks.filter((task) => task.status === "running").map((task) => task.role)
   if (running.length) return `${running.join(" + ")} workers are running in bounded sessions.`
@@ -211,14 +231,6 @@ function appendBudget(chunks: TextChunk[], label: string, used: number, limit: n
     accent("■".repeat(filled)),
     fg(theme.borderMuted)("·".repeat(width - filled)),
     plain(`  ${value ?? `${used}/${limit}`}`),
-  ])
-}
-
-function appendUnavailableBudget(chunks: TextChunk[], label: string, limit: string): void {
-  appendLine(chunks, [
-    dim(label.padEnd(9)),
-    fg(theme.borderMuted)("·".repeat(12)),
-    warning(`  --/${limit}`),
   ])
 }
 
@@ -277,4 +289,9 @@ function eventLabel(value: string): string {
 
 function compactNumber(value: number): string {
   return value >= 1000 ? `${Math.round(value / 1000)}K` : String(value)
+}
+
+function formatDuration(value: number): string {
+  const seconds = Math.floor(value / 1000)
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
 }

@@ -4,6 +4,8 @@ import type {
   EvidenceRef,
   RuntimeContext,
   TaskSpec,
+  ToolAdapter,
+  ToolExecutionRequest,
   WorkerResult,
 } from "@cyrion/contracts"
 
@@ -11,6 +13,13 @@ export class FixtureAgentRuntime implements AgentRuntime {
   readonly #cancelled = new Set<string>()
 
   async runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
+    await context.tools.execute({
+      capability: task.capabilities.includes("fixture.compare") ? "fixture.compare" : "fixture.read",
+      target: task.target,
+      timeoutMs: 1_000,
+      maxOutputBytes: 4_096,
+      input: { fixture: "demo", operation: task.role },
+    })
     await Bun.sleep(task.role === "web" ? 180 : task.role === "api" ? 210 : 90)
     if (this.#cancelled.has(context.agentId)) throw new Error("Worker cancelled")
 
@@ -117,6 +126,21 @@ export class FixtureAgentRuntime implements AgentRuntime {
       uri,
       sha256: createHash("sha256").update(content).digest("hex"),
       capturedAt: new Date().toISOString(),
+    }
+  }
+}
+
+export class FixtureToolAdapter implements ToolAdapter {
+  calls: ToolExecutionRequest[] = []
+
+  async execute(request: ToolExecutionRequest, signal: AbortSignal): Promise<unknown> {
+    if (signal.aborted) throw signal.reason
+    this.calls.push(structuredClone(request))
+    return {
+      fixture: "demo",
+      target: request.target,
+      capability: request.capability,
+      accepted: true,
     }
   }
 }

@@ -160,11 +160,21 @@ ${fg(theme.success)("■ EVENT STREAM HEALTHY")}`
   }
   renderer.keyInput.on("keypress", onKeyPress)
   renderer.on(CliRenderEvents.RESIZE, render)
-  renderer.once(CliRenderEvents.DESTROY, () => renderer.keyInput.off("keypress", onKeyPress))
-  controller.events.subscribe(render)
+  let unsubscribe = (): void => {}
+  const destroyed = new Promise<void>((resolve) => {
+    renderer.once(CliRenderEvents.DESTROY, () => {
+      renderer.keyInput.off("keypress", onKeyPress)
+      unsubscribe()
+      resolve()
+    })
+  })
+  unsubscribe = controller.events.subscribe(render)
   input.focus()
   render()
-  void controller.run().then(render)
+  const run = controller.run()
+  await destroyed
+  await controller.cancel()
+  await run
 }
 
 function panel(

@@ -10,7 +10,7 @@ operator + manifest
         |                          |
         +-------------------- controller
                                    |
-                          persisted event first
+                          durable event first
                                    |
                  +-----------------+-----------------+
                  |                 |                 |
@@ -47,3 +47,20 @@ prompt.
 OpenCode supplies independent sessions, provider access, streaming, and
 cancellation. Cyrion owns the task graph, leases, validation gates, and durable
 event model. This avoids two schedulers competing for worker lifecycle.
+
+## Controller state
+
+The controller can use either an in-memory store for disposable demos or a
+SQLite store for resumable engagements. SQLite uses one local writer, WAL mode,
+monotonic per-engagement event sequences, and a materialized snapshot. Tasks
+carry a stable input hash, attempt number, and expiring lease. Recovery requeues
+an interrupted task under the same identity before asking Root for more work.
+
+Every runtime receives a task-bound tool gateway. The gateway rejects target or
+capability changes, invalid timeouts, excessive output budgets, and unregistered
+adapters before execution. Audit events contain request metadata, never opaque
+worker input or tool output.
+
+Provider-reported token and cost usage is accumulated into the engagement and
+checked against the manifest. The remaining budget passed to each worker is
+calculated from measured use and elapsed wall time.

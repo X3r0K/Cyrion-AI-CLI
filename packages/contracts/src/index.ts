@@ -79,6 +79,13 @@ export interface WorkerResult {
   findings: Finding[]
   evidence: EvidenceRef[]
   report?: string
+  usage?: ResourceUsage
+}
+
+export interface ResourceUsage {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
 }
 
 export type RootAction =
@@ -93,16 +100,27 @@ export interface RootDecision {
 
 export type EventType =
   | "engagement.started"
+  | "engagement.recovered"
   | "engagement.paused"
   | "engagement.resumed"
+  | "engagement.cancelled"
   | "engagement.completed"
   | "engagement.failed"
   | "root.decision.proposed"
   | "root.decision.rejected"
   | "task.queued"
   | "task.started"
+  | "task.lease.acquired"
+  | "task.heartbeat"
+  | "task.reconciled"
+  | "task.cancelled"
   | "task.completed"
   | "task.failed"
+  | "tool.request.accepted"
+  | "tool.request.completed"
+  | "tool.request.rejected"
+  | "budget.updated"
+  | "budget.exceeded"
   | "finding.updated"
   | "operator.message"
 
@@ -130,19 +148,30 @@ export interface AgentRecord {
 
 export interface TaskRecord extends TaskSpec {
   status: TaskStatus
+  inputHash: string
+  attempt: number
   agentId?: string
+  lease?: TaskLease
   result?: WorkerResult
+}
+
+export interface TaskLease {
+  ownerId: string
+  acquiredAt: string
+  heartbeatAt: string
+  expiresAt: string
 }
 
 export interface EngagementSnapshot {
   manifest: EngagementManifest
-  status: "idle" | "running" | "paused" | "completed" | "failed"
+  status: "idle" | "running" | "paused" | "cancelled" | "completed" | "failed"
   startedAt?: string
   finishedAt?: string
   agents: AgentRecord[]
   tasks: TaskRecord[]
   findings: Finding[]
   evidence: EvidenceRef[]
+  usage: ResourceUsage
   events: CyrionEvent[]
 }
 
@@ -153,6 +182,35 @@ export interface RuntimeContext {
   systemPrompt: string
   scope: ScopePolicy
   remainingBudget: EngagementBudgets
+  tools: ToolGateway
+}
+
+export interface ToolInvocation {
+  capability: string
+  target: string
+  timeoutMs: number
+  maxOutputBytes: number
+  input: unknown
+}
+
+export interface ToolExecutionRequest extends ToolInvocation {
+  engagementId: string
+  taskId: string
+  agentId: string
+}
+
+export interface ToolExecutionResult<T = unknown> {
+  output: T
+  durationMs: number
+  outputBytes: number
+}
+
+export interface ToolGateway {
+  execute<T = unknown>(invocation: ToolInvocation): Promise<ToolExecutionResult<T>>
+}
+
+export interface ToolAdapter {
+  execute(request: ToolExecutionRequest, signal: AbortSignal): Promise<unknown>
 }
 
 export interface AgentRuntime {
@@ -163,6 +221,7 @@ export interface AgentRuntime {
 
 export interface RootPlanner {
   decide(snapshot: EngagementSnapshot): Promise<RootDecision>
+  takeUsage?(): ResourceUsage | undefined
   close(): Promise<void>
 }
 

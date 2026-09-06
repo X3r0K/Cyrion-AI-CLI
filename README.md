@@ -25,12 +25,27 @@ bun run demo
 
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
 supports `1`–`4` to switch views, `p` to pause/resume dispatch, and `q` to quit.
+If work is still active, `q` cancels the leased workers before returning control
+to the shell.
+
+To exercise durable state and restart-safe task reconciliation, provide a local
+SQLite path:
+
+```bash
+bun run demo:headless --state .cyrion/community.sqlite
+```
+
+Running the same command again loads the completed engagement without
+redispatching its tasks. If a process stops while a task is leased, the next run
+records a recovery event, invalidates the stale lease, and retries the same task
+identity with an incremented attempt number.
 
 ## Packages
 
 - `apps/cli` — Cyrion terminal application.
 - `packages/contracts` — public, versioned engagement/task/event contracts.
-- `packages/controller` — Root decision loop, scheduler, budgets, and state.
+- `packages/controller` — Root decision loop, scheduler, SQLite state, leases,
+  budgets, and the scope-bound tool gateway.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
 - `agents` — intentionally concise public role prompts.
 - `fixtures` — non-destructive, deterministic demo engagements.
@@ -44,3 +59,6 @@ Only assess systems you own or are explicitly authorized to test. The
 controller—not a model prompt—enforces target scope, capability grants,
 concurrency, depth, and budgets. This alpha ships fixture workers only; real
 network tooling requires an isolated worker adapter and explicit scope policy.
+
+See [Controller and execution](docs/CONTROLLER.md) for the durable-state and
+tool-gateway guarantees and their current limitations.
