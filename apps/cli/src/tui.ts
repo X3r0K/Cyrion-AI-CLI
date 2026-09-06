@@ -4,7 +4,10 @@ import {
   InputRenderable,
   InputRenderableEvents,
   TextRenderable,
+  bold,
   createCliRenderer,
+  fg,
+  t,
   type KeyEvent,
 } from "@opentui/core"
 import type { CyrionController } from "@cyrion/controller"
@@ -33,7 +36,9 @@ export async function runTui(controller: CyrionController): Promise<void> {
     backgroundColor: theme.background,
   })
   const header = panel(renderer, { height: 3, flexDirection: "row", justifyContent: "space-between", paddingX: 1 })
-  const brand = new TextRenderable(renderer, { content: "▣  CYRION/AI  [ COMMUNITY EDITION ]", fg: theme.accent })
+  const brand = new TextRenderable(renderer, {
+    content: t`${bold(fg(theme.accent)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
+  })
   const headerMeta = new TextRenderable(renderer, {
     content: `DEMO / LAB  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.scope.targets[0]}  |  AUTONOMOUS`,
     fg: theme.muted,
@@ -42,11 +47,12 @@ export async function runTui(controller: CyrionController): Promise<void> {
   header.add(headerMeta)
 
   const tabs = new BoxRenderable(renderer, { height: 3, flexDirection: "row", gap: 1 })
-  const tabBoxes = views.map((view, index) => {
+  const tabItems = views.map((view, index) => {
     const box = panel(renderer, { width: "25%", alignItems: "center", justifyContent: "center" })
-    box.add(new TextRenderable(renderer, { content: `[${index + 1}] ${view}`, fg: theme.text }))
+    const label = new TextRenderable(renderer, { content: `[${index + 1}] ${view}`, fg: theme.text })
+    box.add(label)
     tabs.add(box)
-    return box
+    return { box, label }
   })
 
   const body = new BoxRenderable(renderer, { flexGrow: 1, flexDirection: "row", gap: 1 })
@@ -93,10 +99,11 @@ export async function runTui(controller: CyrionController): Promise<void> {
   let activeView: ViewName = "MISSION"
   const render = (): void => {
     const snapshot = controller.snapshot
-    for (const [index, box] of tabBoxes.entries()) {
+    for (const [index, item] of tabItems.entries()) {
       const active = views[index] === activeView
-      box.backgroundColor = active ? theme.accentDark : theme.panel
-      box.borderColor = active ? theme.accent : theme.border
+      item.box.backgroundColor = active ? theme.accent : theme.panel
+      item.box.borderColor = active ? theme.accentBright : theme.border
+      item.label.fg = active ? theme.activeText : theme.muted
     }
     leftText.content = formatSwarm(snapshot)
     if (activeView === "MISSION") {
@@ -104,18 +111,18 @@ export async function runTui(controller: CyrionController): Promise<void> {
       rightText.content = formatEngagement(snapshot)
     } else if (activeView === "SWARM") {
       centerText.content = formatTaskBoard(snapshot)
-      rightText.content = [
-        "ROOT DISPATCH",
-        "────────────────────────────",
-        "Root owns the plan",
-        `Parallel slots  ${snapshot.manifest.budgets.maxConcurrentAgents}`,
-        `Queued tasks    ${snapshot.tasks.filter((task) => task.status === "queued").length}`,
-        `Completed       ${snapshot.tasks.filter((task) => task.status === "completed").length}`,
-        "",
-        "LAST HANDOFF",
-        "────────────────────────────",
-        snapshot.tasks.at(-1)?.objective ?? "Waiting for dispatch",
-      ].join("\n")
+      rightText.content = t`${bold(fg(theme.text)("ROOT DISPATCH"))}
+${fg(theme.border)("────────────────────────────")}
+${fg(theme.accent)("■ ROOT OWNS THE PLAN")}
+${fg(theme.dim)("Parallel slots  ")}${fg(theme.text)(snapshot.manifest.budgets.maxConcurrentAgents)}
+${fg(theme.dim)("Queued tasks    ")}${fg(theme.warning)(snapshot.tasks.filter((task) => task.status === "queued").length)}
+${fg(theme.dim)("Completed       ")}${fg(theme.success)(snapshot.tasks.filter((task) => task.status === "completed").length)}
+
+${fg(theme.accent)("──────── LAST HANDOFF ────────")}
+${fg(theme.text)(snapshot.tasks.at(-1)?.objective ?? "Waiting for dispatch")}
+
+${fg(theme.success)("■ SCOPE ENFORCED")}
+${fg(theme.success)("■ EVENT STREAM HEALTHY")}`
     } else if (activeView === "FINDINGS") {
       centerText.content = formatFindings(snapshot)
       rightText.content = formatFindingDetail(snapshot)
