@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Fixed packaged and globally linked TUI startup by resolving OpenTUI native
+  libraries through explicit platform-specific optional dependencies, with a
+  packed-consumer TUI smoke check in the release gate.
 - Added an interactive connected-provider/model picker and refreshed the
   terminal with translucent blue-black Kali-inspired panels and brighter cyan
   focus states based on the original product references.

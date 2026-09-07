@@ -52,6 +52,8 @@ try {
     throw new Error(`Packed CLI version ${version} does not match package version ${packageMetadata.version ?? "missing"}`)
   }
 
+  await runTuiSmoke(executable, consumer)
+
   const statePath = join(sandbox, "state.sqlite")
   const artifactsPath = join(sandbox, "artifacts")
   const demo = await run([
@@ -121,4 +123,38 @@ async function run(command: string[], cwd: string): Promise<string> {
     throw new Error(`${command.join(" ")} failed (${exitCode})\n${stderr}${stdout}`)
   }
   return stdout
+}
+
+async function runTuiSmoke(executable: string, cwd: string): Promise<void> {
+  if (process.platform !== "linux") return
+
+  const child = Bun.spawn([
+    "script", "--quiet", "--return", "--command", `bun ${executable} demo`, "/dev/null",
+  ], {
+    cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...Bun.env,
+      BUN_INSTALL_CACHE_DIR: installCache,
+      NPM_CONFIG_CACHE: join(sandbox, "npm-cache"),
+      TEMP: processTemp,
+      TMP: processTemp,
+      TMPDIR: processTemp,
+    },
+  })
+  const timeout = setTimeout(() => child.kill(), 10_000)
+  await Bun.sleep(500)
+  child.stdin.write("q")
+  child.stdin.end()
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ])
+  clearTimeout(timeout)
+  if (exitCode !== 0 || !stdout.includes("CYRION/AI")) {
+    throw new Error(`Packed TUI smoke failed (${exitCode})\n${stderr}${stdout}`)
+  }
 }

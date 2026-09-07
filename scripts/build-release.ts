@@ -17,6 +17,8 @@ const result = await Bun.build({
   external: [
     "@opentui/core-darwin-x64",
     "@opentui/core-darwin-arm64",
+    "@opentui/core-linux-x64",
+    "@opentui/core-linux-x64-musl",
     "@opentui/core-linux-arm64",
     "@opentui/core-linux-arm64-musl",
     "@opentui/core-win32-x64",
