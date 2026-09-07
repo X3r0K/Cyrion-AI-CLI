@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
+import { createInterface } from "node:readline/promises"
 import { assertManifest, type EngagementManifest, type EngagementSnapshot } from "@cyrion/contracts"
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
@@ -14,6 +15,7 @@ import {
   type ProviderStatus,
 } from "@cyrion/runtime-opencode"
 import { runTui } from "./tui"
+import { saveProviderSelection } from "./provider-config"
 
 export const CLI_VERSION = "0.1.0-alpha.1"
 
@@ -110,11 +112,76 @@ async function runDemo(): Promise<void> {
 }
 
 async function runProviders(): Promise<void> {
+  if (args.includes("--select") && args.includes("--json")) {
+    throw new Error("--select cannot be combined with --json")
+  }
   const selection = readProviderSelection(Bun.env)
   const status = await inspectOpenCodeProviders(process.cwd(), selection)
+  if (args.includes("--select")) {
+    await selectProvider(status)
+    return
+  }
   if (args.includes("--json")) console.log(JSON.stringify(status))
   else console.log(formatProviderStatus(status))
   if (args.includes("--check") && !status.ready) process.exitCode = 1
+}
+
+async function selectProvider(status: ProviderStatus): Promise<void> {
+  if (status.error) throw new Error(`Provider discovery failed: ${status.error}`)
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("Provider selection requires an interactive terminal")
+  }
+  if (!status.connectedProviders.length) {
+    throw new Error("No connected providers. Run `opencode auth login`, then retry.")
+  }
+
+  const terminal = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const provider = await promptChoice(
+      terminal,
+      "provider",
+      status.connectedProviders,
+      status.selected?.providerID,
+      (item) => `${item.name} / ${item.id} / ${item.modelCount} models`,
+    )
+    if (!provider.models.length) throw new Error(`Connected provider ${provider.id} has no available models`)
+    const model = await promptChoice(
+      terminal,
+      "model",
+      provider.models,
+      status.selected?.providerID === provider.id ? status.selected.modelID : undefined,
+      (item) => item.name === item.id ? item.id : `${item.name} / ${item.id}`,
+    )
+    const path = join(process.cwd(), ".env")
+    await saveProviderSelection(path, { providerID: provider.id, modelID: model.id })
+    console.log(`\nSelected ${provider.id}/${model.id}`)
+    console.log(`Saved provider/model selection to ${path}`)
+    console.log("Credential remains managed by OpenCode or your environment.")
+  } finally {
+    terminal.close()
+  }
+}
+
+async function promptChoice<T extends { id: string }>(
+  terminal: ReturnType<typeof createInterface>,
+  label: string,
+  choices: T[],
+  selectedID: string | undefined,
+  format: (choice: T) => string,
+): Promise<T> {
+  const defaultIndex = Math.max(0, choices.findIndex((choice) => choice.id === selectedID))
+  console.log(`\nConnected ${label}s:`)
+  for (const [index, choice] of choices.entries()) {
+    const marker = index === defaultIndex ? "◆" : "◇"
+    console.log(`  ${marker} [${index + 1}] ${format(choice)}`)
+  }
+  while (true) {
+    const answer = (await terminal.question(`Choose ${label} [${defaultIndex + 1}]: `)).trim()
+    const index = answer ? Number(answer) - 1 : defaultIndex
+    const choice = Number.isInteger(index) ? choices[index] : undefined
+    if (choice) return choice
+    console.log(`Enter a number from 1 to ${choices.length}.`)
+  }
 }
 
 function formatProviderStatus(status: ProviderStatus): string {
@@ -244,7 +311,7 @@ function usage(): string {
     "Usage:",
     "  cyrion demo [--headless] [--fixture <scenario>] [--mode autonomous|supervised] [--approve-all]",
     "              [--state <sqlite-path>] [--artifacts <directory>]",
-    "  cyrion providers [--json] [--check]",
+    "  cyrion providers [--json] [--check] [--select]",
     "  cyrion status <engagement-id> --state <sqlite-path> [--json]",
     "  cyrion report <engagement-id> --state <sqlite-path> [--format markdown|json]",
     "  cyrion version",

@@ -51,6 +51,7 @@ describe("provider readiness", () => {
       name: "OpenAI",
       source: "env",
       modelCount: 1,
+      models: [{ id: "gpt-test", name: "GPT Test" }],
     }])
   })
 

@@ -64,16 +64,16 @@ export async function runTui(
   })
   const header = panel(renderer, { height: 3, flexDirection: "row", justifyContent: "space-between", paddingX: 1 })
   const brand = new TextRenderable(renderer, {
-    content: t`${bold(fg(theme.accent)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
+    content: t`${bold(fg(theme.accentBright)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
   })
   const headerMeta = new TextRenderable(renderer, {
-    content: `${runtime.mode.toUpperCase()} / LLM ${runtime.provider ?? "NOT CONFIGURED"}  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.mode.toUpperCase()}`,
+    content: `DEMO / LAB  |  ${controller.snapshot.manifest.id}  |  ${runtime.mode.toUpperCase()}  |  LLM ${runtime.provider ?? "NOT CONFIGURED"}`,
     fg: theme.muted,
   })
   header.add(brand)
   header.add(headerMeta)
 
-  const tabs = new BoxRenderable(renderer, { height: 3, flexDirection: "row", gap: 1 })
+  const tabs = new BoxRenderable(renderer, { height: 3, flexDirection: "row", gap: 1, backgroundColor: theme.background })
   const tabItems = views.map((view, index) => {
     const box = panel(renderer, { width: "25%", alignItems: "center", justifyContent: "center" })
     const label = new TextRenderable(renderer, { content: `[${index + 1}] ${view}`, fg: theme.text })
@@ -82,7 +82,12 @@ export async function runTui(
     return { box, label }
   })
 
-  const body = new BoxRenderable(renderer, { flexGrow: 1, flexDirection: "row", gap: 1 })
+  const body = new BoxRenderable(renderer, {
+    flexGrow: 1,
+    flexDirection: "row",
+    gap: 1,
+    backgroundColor: theme.background,
+  })
   const left = panel(renderer, { width: "23%", padding: 1, flexDirection: "column" })
   const leftTitle = new TextRenderable(renderer, { content: "AGENT SWARM:", fg: theme.text })
   const leftText = new TextRenderable(renderer, { content: "", fg: theme.muted, flexGrow: 1, wrapMode: "word" })
@@ -100,7 +105,14 @@ export async function runTui(
   body.add(center)
   body.add(right)
 
-  const footer = panel(renderer, { height: 3, paddingX: 1, flexDirection: "row", alignItems: "center", gap: 1 })
+  const footer = panel(renderer, {
+    height: 3,
+    paddingX: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 1,
+    borderColor: theme.accentDark,
+  })
   const prompt = new TextRenderable(renderer, { content: "root >", fg: theme.accent, width: 7 })
   footer.add(prompt)
   const input = new InputRenderable(renderer, {

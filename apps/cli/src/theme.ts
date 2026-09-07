@@ -20,22 +20,22 @@ export interface CyrionTheme {
 }
 
 const colorTheme: CyrionTheme = {
-  background: "#070C0E",
-  panel: "#0D1517",
-  panelRaised: "#111B1D",
-  selection: "#123536",
-  border: "#34494C",
-  borderMuted: "#243639",
-  accent: "#00D2BA",
-  accentBright: "#07DCCD",
-  accentDark: "#063F3C",
-  activeText: "#061011",
-  text: "#F4F7F9",
-  muted: "#A8B2B7",
-  dim: "#7F8E92",
-  warning: "#F8C038",
-  danger: "#FF7068",
-  success: "#58D080",
+  background: "#020709E8",
+  panel: "#071114C4",
+  panelRaised: "#0A1A1DDE",
+  selection: "#06413FCC",
+  border: "#245158D9",
+  borderMuted: "#17343AB8",
+  accent: "#00E8D0",
+  accentBright: "#32FFE7",
+  accentDark: "#064E4A",
+  activeText: "#02090A",
+  text: "#F0F4F2",
+  muted: "#A6B8BB",
+  dim: "#71878B",
+  warning: "#F4C95D",
+  danger: "#FF6577",
+  success: "#63DC8C",
 }
 
 const monochromeTheme: CyrionTheme = {

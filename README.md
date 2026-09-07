@@ -29,6 +29,9 @@ The demo uses deterministic fixture workers and does not require an LLM. Copy
 model request. See [Installation](docs/INSTALLATION.md) for the exact variables
 and the current provider-execution boundary.
 
+Use `bun run apps/cli/src/index.ts providers --select` to choose interactively
+from the providers and models OpenCode reports as connected.
+
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
 supports `1`–`4` to switch views, arrows or `j`/`k` to select workers, findings,
 and evidence, `Enter` to inspect, `i` to focus Root chat, `p` to pause/resume

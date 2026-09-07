@@ -16,6 +16,10 @@ finding, and evidence reference comes from the public engagement snapshot.
 Use arrow keys or `j`/`k` to move within a view. Use left/right or `h`/`l` to
 move between views. Press `?` or `Ctrl+K` for the in-product command reference.
 
+Run `cyrion providers --select` before opening the dashboard to choose a model
+from the providers OpenCode reports as connected. The active selection is shown
+in the mission briefing and engagement inspector.
+
 The dashboard owns the keyboard by default. Press `i` or `Tab` to focus Root
 chat, `Enter` to send, and `Escape` or `Tab` to return to navigation. Root chat
 returns a concise summary derived from recorded state; it is not a hidden chain
@@ -44,3 +48,8 @@ removed before rendering. Binary artifacts show metadata rather than raw bytes.
 - Below 90 columns, one focused workspace pane is shown.
 - Setting `NO_COLOR` switches semantic colors to a monochrome palette; labels
   and glyphs continue to communicate every state.
+
+The color theme uses translucent blue-black panel layers over a near-black base,
+cyan focus states, and restrained green/amber/red status colors. Alpha blending
+adds depth in terminals that support it; labels and borders preserve the same
+hierarchy where transparency is flattened.

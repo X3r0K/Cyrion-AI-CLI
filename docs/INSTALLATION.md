@@ -36,6 +36,14 @@ bun run apps/cli/src/index.ts providers
 bun run apps/cli/src/index.ts providers --check
 ```
 
+Choose from connected providers and their available models inside the CLI. The
+picker updates only `CYRION_PROVIDER_ID` and `CYRION_MODEL_ID`; it does not read,
+display, or rewrite provider credentials:
+
+```bash
+bun run apps/cli/src/index.ts providers --select
+```
+
 The first command explains missing configuration; `--check` also exits nonzero
 until the selected provider, model, and credential are available. The current
 assessment command still uses deterministic fixture planning and workers. A

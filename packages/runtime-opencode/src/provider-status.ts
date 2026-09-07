@@ -18,6 +18,7 @@ export interface ProviderSummary {
   name: string
   source: CatalogProvider["source"]
   modelCount: number
+  models: Array<{ id: string; name: string }>
 }
 
 export interface SelectedProviderStatus extends ProviderSelection {
@@ -63,6 +64,9 @@ export function evaluateProviderStatus(
       name: provider.name,
       source: provider.source,
       modelCount: Object.keys(provider.models).length,
+      models: Object.entries(provider.models)
+        .map(([id, model]) => ({ id, name: model.name }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
 

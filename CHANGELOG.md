@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added an interactive connected-provider/model picker and refreshed the
+  terminal with translucent blue-black Kali-inspired panels and brighter cyan
+  focus states based on the original product references.
 - Added a packaged environment template, provider/model validation,
   OpenCode provider readiness diagnostics, and visible runtime configuration in
   the terminal without enabling unscoped live assessment.
