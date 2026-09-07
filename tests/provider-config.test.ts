@@ -60,12 +60,14 @@ describe("provider selection persistence", () => {
       providerID: "opencode",
       modelID: "test-model",
       defaultPlanner: "opencode",
+      defaultWorkers: "opencode",
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "monochrome",
     })
     expect(updated).toContain("OPENCODE_API_KEY=keep-private")
     expect(updated).toContain("CYRION_DEFAULT_PLANNER=opencode")
+    expect(updated).toContain("CYRION_DEFAULT_WORKERS=opencode")
     expect(updated).toContain("CYRION_DEFAULT_MODE=autonomous")
     expect(updated).toContain("CYRION_DEFAULT_FIXTURE=clean")
     expect(updated).toContain("CYRION_COLOR_MODE=monochrome")
@@ -74,6 +76,7 @@ describe("provider selection persistence", () => {
   test("reads validated defaults and rejects unsupported values", () => {
     expect(readGeneralSettings({})).toEqual({
       defaultPlanner: "fixture",
+      defaultWorkers: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
@@ -89,6 +92,7 @@ describe("provider selection persistence", () => {
       providerID: "opencode",
       modelID: "test-model",
       defaultPlanner: "opencode",
+      defaultWorkers: "opencode",
       defaultMode: "supervised",
       defaultFixture: "incomplete",
       colorMode: "color",
@@ -97,6 +101,7 @@ describe("provider selection persistence", () => {
     expect(output).toContain("CYRION_PROVIDER_ID=opencode")
     expect(output).toContain("CYRION_MODEL_ID=test-model")
     expect(output).toContain("CYRION_DEFAULT_PLANNER=opencode")
+    expect(output).toContain("CYRION_DEFAULT_WORKERS=opencode")
     expect(output).toContain("CYRION_DEFAULT_MODE=supervised")
     expect(output).toContain("CYRION_DEFAULT_FIXTURE=incomplete")
     expect(output).toContain("CYRION_COLOR_MODE=color")
@@ -110,6 +115,7 @@ describe("provider selection persistence", () => {
       providerID: "",
       modelID: "",
       defaultPlanner: "fixture",
+      defaultWorkers: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
@@ -119,6 +125,7 @@ describe("provider selection persistence", () => {
       providerID: "opencode",
       modelID: "",
       defaultPlanner: "opencode",
+      defaultWorkers: "opencode",
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
@@ -127,9 +134,19 @@ describe("provider selection persistence", () => {
       providerID: "",
       modelID: "",
       defaultPlanner: "opencode",
+      defaultWorkers: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
-    })).rejects.toThrow("OpenCode planning requires an LLM provider and model")
+    })).rejects.toThrow("OpenCode planning or workers require an LLM provider and model")
+    expect(saveGeneralSettings(path, {
+      providerID: "",
+      modelID: "",
+      defaultPlanner: "fixture",
+      defaultWorkers: "opencode",
+      defaultMode: "autonomous",
+      defaultFixture: "clean",
+      colorMode: "auto",
+    })).rejects.toThrow("OpenCode planning or workers require an LLM provider and model")
   })
 })

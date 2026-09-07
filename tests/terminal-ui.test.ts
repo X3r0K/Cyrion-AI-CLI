@@ -38,17 +38,23 @@ describe("product terminal state", () => {
   test("shows the configured runtime and provider without exposing credentials", async () => {
     const snapshot = await completedSnapshot()
     const output = plainText(formatEngagement(snapshot, {
-      mode: "fixture",
-      provider: "openai/gpt-test (CONFIGURED)",
+      mode: "hybrid",
+      planner: "opencode",
+      workers: "opencode",
+      provider: "openai/gpt-test (ACTIVE)",
     }))
-    expect(output).toContain("FIXTURE")
-    expect(output).toContain("openai/gpt-test (CONFIGURED)")
+    expect(output).toContain("HYBRID")
+    expect(output).toContain("Root          OPENCODE")
+    expect(output).toContain("Workers       OPENCODE")
+    expect(output).toContain("openai/gpt-test (ACTIVE)")
     expect(output).not.toContain("API_KEY")
     const mission = plainText(formatMission(snapshot, {
-      mode: "fixture",
-      provider: "openai/gpt-test (CONFIGURED)",
+      mode: "hybrid",
+      planner: "opencode",
+      workers: "opencode",
+      provider: "openai/gpt-test (ACTIVE)",
     }))
-    expect(mission).toContain("FIXTURE / LLM openai/gpt-test (CONFIGURED)")
+    expect(mission).toContain("HYBRID / ROOT OPENCODE / WORKERS OPENCODE / LLM openai/gpt-test (ACTIVE)")
   })
 
   test("navigates workers, findings, and linked evidence without relying on color", async () => {
@@ -166,6 +172,7 @@ describe("product terminal state", () => {
       providerID: "opencode",
       modelID: "zen-test",
       defaultPlanner: "opencode",
+      defaultWorkers: "opencode",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
@@ -186,6 +193,7 @@ describe("product terminal state", () => {
     expect(settings).toContain("GENERAL SETTINGS")
     expect(settings).toContain("OpenCode Zen / opencode")
     expect(settings).toContain("Root planner")
+    expect(settings).toContain("Worker review")
     expect(settings).toContain("KNOWN POSITIVE")
     expect(inspector).toContain("CONNECTED")
     expect(inspector).toContain("Credentials are managed by OpenCode")

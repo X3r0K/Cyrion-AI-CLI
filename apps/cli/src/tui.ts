@@ -75,7 +75,7 @@ export async function runTui(
   evidenceStore: EvidenceStore,
   runtime: RuntimeDisplay = { mode: "fixture" },
 ): Promise<void> {
-  let runtimeDisplay = { ...runtime }
+  const runtimeDisplay = { ...runtime }
   const generalSettings = readGeneralSettings(Bun.env)
   const providerSelection = readProviderSelection(Bun.env)
   let settingsEditor = createSettingsEditor({
@@ -260,12 +260,10 @@ export async function runTui(
         process.env.CYRION_PROVIDER_ID = values.providerID
         process.env.CYRION_MODEL_ID = values.modelID
         process.env.CYRION_DEFAULT_PLANNER = values.defaultPlanner
+        process.env.CYRION_DEFAULT_WORKERS = values.defaultWorkers
         process.env.CYRION_DEFAULT_MODE = values.defaultMode
         process.env.CYRION_DEFAULT_FIXTURE = values.defaultFixture
         process.env.CYRION_COLOR_MODE = values.colorMode
-        runtimeDisplay = values.providerID && values.modelID
-          ? { ...runtimeDisplay, provider: `${values.providerID}/${values.modelID} (CONFIGURED)` }
-          : { mode: runtimeDisplay.mode }
         settingsDisplay = { ...settingsDisplay, message: "Settings saved. Defaults apply on the next launch." }
       })
       .catch((error: unknown) => {

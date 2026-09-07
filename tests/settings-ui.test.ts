@@ -31,6 +31,7 @@ describe("terminal settings editor", () => {
       providerID: "openai",
       modelID: "gpt-b",
       defaultPlanner: "fixture",
+      defaultWorkers: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
@@ -46,10 +47,12 @@ describe("terminal settings editor", () => {
       providerID: "openai",
       modelID: "gpt-a",
       defaultPlanner: "fixture",
+      defaultWorkers: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
     })
+    state = moveSettingsSelection(state, 1)
     state = moveSettingsSelection(state, 1)
     state = moveSettingsSelection(state, 1)
     state = moveSettingsSelection(state, 1)

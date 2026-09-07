@@ -1,7 +1,15 @@
 import type { ProviderSummary } from "@cyrion/runtime-opencode"
 import type { TerminalSettings } from "./provider-config"
 
-export const settingsFields = ["provider", "model", "defaultPlanner", "defaultMode", "defaultFixture", "colorMode"] as const
+export const settingsFields = [
+  "provider",
+  "model",
+  "defaultPlanner",
+  "defaultWorkers",
+  "defaultMode",
+  "defaultFixture",
+  "colorMode",
+] as const
 export type SettingsField = (typeof settingsFields)[number]
 
 export interface SettingsEditorState {
@@ -42,6 +50,8 @@ export function adjustSetting(
     draft.modelID = model.id
   } else if (field === "defaultPlanner") {
     draft.defaultPlanner = cycleValues(["fixture", "opencode"], draft.defaultPlanner, delta)
+  } else if (field === "defaultWorkers") {
+    draft.defaultWorkers = cycleValues(["fixture", "opencode"], draft.defaultWorkers, delta)
   } else if (field === "defaultMode") {
     draft.defaultMode = cycleValues(["autonomous", "supervised"], draft.defaultMode, delta)
   } else if (field === "defaultFixture") {

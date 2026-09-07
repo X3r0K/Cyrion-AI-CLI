@@ -16,6 +16,8 @@ export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE" | "SETTINGS
 export interface RuntimeDisplay {
   mode: "fixture" | "hybrid"
   provider?: string
+  planner?: "fixture" | "opencode"
+  workers?: "fixture" | "opencode"
 }
 
 export interface SettingsDisplay {
@@ -56,7 +58,7 @@ export function formatMission(snapshot: EngagementSnapshot, runtime?: RuntimeDis
   if (runtime) {
     appendLine(chunks, [
       dim("runtime   >  "),
-      plain(`${runtime.mode.toUpperCase()} / LLM ${runtime.provider ?? "NOT CONFIGURED"}`),
+      plain(runtimeLabel(runtime)),
     ])
   }
   appendLine(chunks, [dim("operator  >  "), plain(snapshot.manifest.objective)])
@@ -349,6 +351,8 @@ export function formatSettingsSidebar(
   appendLine(chunks, [settingsAreDirty(state) ? warning("◇ DRAFT MODIFIED") : success("■ DRAFT SYNCED")])
   appendSection(chunks, "CURRENT SESSION", 28)
   appendKeyValue(chunks, "Runtime", runtime.mode.toUpperCase())
+  appendKeyValue(chunks, "Root", runtime.planner?.toUpperCase() ?? "FIXTURE")
+  appendKeyValue(chunks, "Workers", runtime.workers?.toUpperCase() ?? "FIXTURE")
   appendKeyValue(chunks, "LLM", runtime.provider ?? "NOT CONFIGURED")
   appendSection(chunks, "CONFIG FILE", 28)
   appendLine(chunks, [dim(sanitizeTerminalText(display.environmentPath, 180))], false)
@@ -368,6 +372,8 @@ export function formatEngagement(snapshot: EngagementSnapshot, runtime?: Runtime
   appendKeyValue(chunks, "Profile", snapshot.manifest.profile.replace("-", " + ").toUpperCase())
   if (runtime) {
     appendKeyValue(chunks, "Runtime", runtime.mode.toUpperCase())
+    appendKeyValue(chunks, "Root", runtime.planner?.toUpperCase() ?? "FIXTURE")
+    appendKeyValue(chunks, "Workers", runtime.workers?.toUpperCase() ?? "FIXTURE")
     appendKeyValue(chunks, "LLM config", runtime.provider ?? "NOT CONFIGURED")
   }
   appendLine(chunks, [dim("Scope         "), success("■ LOCKED")])
@@ -534,6 +540,7 @@ function settingLabel(field: SettingsField): string {
   if (field === "provider") return "LLM provider"
   if (field === "model") return "LLM model"
   if (field === "defaultPlanner") return "Root planner"
+  if (field === "defaultWorkers") return "Worker review"
   if (field === "defaultMode") return "Default mode"
   if (field === "defaultFixture") return "Demo scenario"
   return "Color profile"
@@ -543,6 +550,7 @@ function settingDescription(field: SettingsField): string {
   if (field === "provider") return "Connected OpenCode provider used by future LLM-backed runtime sessions."
   if (field === "model") return "Model selected from the active provider's discovered catalog."
   if (field === "defaultPlanner") return "Fixture uses deterministic Root planning; OpenCode enables guarded provider review."
+  if (field === "defaultWorkers") return "OpenCode reviews canonical worker results but cannot alter findings or evidence."
   if (field === "defaultMode") return "Default controller supervision policy when --mode is not supplied."
   if (field === "defaultFixture") return "Default deterministic demo scenario when --fixture is not supplied."
   return "Terminal color behavior. Auto follows NO_COLOR; explicit profiles override it."
@@ -558,6 +566,12 @@ function formatSettingValue(field: SettingsField, value: string, display: Settin
     return model && model.name !== model.id ? `${model.name} / ${model.id}` : value || "NOT CONFIGURED"
   }
   return value.toUpperCase().replaceAll("-", " ")
+}
+
+function runtimeLabel(runtime: RuntimeDisplay): string {
+  const planner = runtime.planner?.toUpperCase() ?? "FIXTURE"
+  const workers = runtime.workers?.toUpperCase() ?? "FIXTURE"
+  return `${runtime.mode.toUpperCase()} / ROOT ${planner} / WORKERS ${workers} / LLM ${runtime.provider ?? "NOT CONFIGURED"}`
 }
 
 function discoveryStatus(value: SettingsDisplay["discovery"]): TextChunk {

@@ -30,8 +30,9 @@ environment variable in `.env`. As an alternative to an API-key variable, run
 Never commit `.env`.
 
 The terminal Settings view can also persist the provider, model, default Root
-planner, controller mode, demo scenario, and color profile. CLI `--planner`,
-`--mode`, and `--fixture` flags override their saved defaults for a single launch.
+planner, worker review, controller mode, demo scenario, and color profile. CLI
+`--planner`, `--workers`, `--mode`, and `--fixture` flags override their saved
+defaults for a single launch.
 
 Check discovery without making a model request:
 
@@ -53,14 +54,21 @@ until the selected provider, model, and credential are available. To make real
 model requests for bounded Root review, run:
 
 ```bash
-cyrion demo --planner opencode
+cyrion demo --planner opencode --workers opencode
 ```
 
 OpenCode may accept or stop each exact controller-generated transition and may
 replace only its rationale. It cannot invent task IDs, targets, capabilities,
-or dependencies. Tool execution and evidence capture remain deterministic and
-isolated; provider-backed workers remain disabled until a scoped evidence and
-tool adapter exists. Model requests may incur provider charges.
+or dependencies. Role-specific OpenCode sessions may also review canonical
+worker outputs and append only labeled public review summaries. Tool execution,
+findings, evidence, provenance, verdicts, and report content remain deterministic
+and isolated. This is not a live network assessment adapter. Model requests may
+incur provider charges.
+
+The packaged demo manifests allow three minutes so slower local or free models
+can finish their reviews while the controller continues lease heartbeats. The
+deadline remains enforced; production manifests should set an explicit limit
+appropriate to their provider and authorization window.
 
 ## Build the distributable CLI
 

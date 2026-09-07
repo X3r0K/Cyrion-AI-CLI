@@ -14,7 +14,7 @@
     "maxAgents": 6,
     "maxDepth": 1,
     "maxTasks": 8,
-    "maxDurationMs": 60000,
+    "maxDurationMs": 180000,
     "maxTokens": 50000,
     "maxCostUsd": 1
   }

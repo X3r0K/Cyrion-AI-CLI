@@ -4,6 +4,11 @@ Root and worker responses are untrusted input even when the provider reports
 that JSON-schema formatting succeeded. Cyrion validates provider output again
 before it can enter durable state or drive scheduling.
 
+In guarded worker mode, provider output is narrower than `WorkerResult`: only
+an `accept`/`flag` review and labeled public summary are admitted. The canonical
+worker's summary, observations, findings, evidence, report, and provenance are copied
+unchanged, then the complete result passes the normal controller gates.
+
 ## Contract validation
 
 - Engagement manifests, Root decisions, worker results, evidence references,

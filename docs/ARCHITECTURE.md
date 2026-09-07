@@ -64,6 +64,14 @@ providers that reject `tool_choice: none`, the only advertised compatibility
 tool is OpenCode's ephemeral session todo list; it cannot access the assessment
 target, repository, host shell, or evidence store.
 
+Guarded worker review uses the same asymmetry. An isolated fixture worker first
+executes its controller-bound tool and captures canonical evidence. A
+role-specific provider session then sees only the task envelope and public
+result metadata. It may append a labeled public review or flag the result for
+attention; the canonical summary, findings, evidence, provenance, validation verdicts, and report
+content remain unchanged. Provider usage is merged into the worker result and
+enforced by the controller budget before admission.
+
 ## Controller state
 
 The controller can use either an in-memory store for disposable demos or a

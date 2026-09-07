@@ -2,12 +2,19 @@
 import { existsSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
-import { assertManifest, type EngagementManifest, type EngagementSnapshot, type RootPlanner } from "@cyrion/contracts"
+import {
+  assertManifest,
+  type AgentRuntime,
+  type EngagementManifest,
+  type EngagementSnapshot,
+  type RootPlanner,
+} from "@cyrion/contracts"
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
 import { renderJsonReport, renderMarkdownReport } from "@cyrion/reporting"
 import {
   FixtureAgentRuntime,
+  GuardedAgentRuntime,
   GuardedRootPlanner,
   IsolatedFixtureToolAdapter,
   OpenCodeRuntime,
@@ -33,6 +40,8 @@ interface StatusSummary {
   rejected: number
   inconclusive: number
   evidence: number
+  planner?: "fixture" | "opencode"
+  workers?: "fixture" | "opencode"
   approval?: "pending" | "approved"
 }
 
@@ -76,6 +85,10 @@ async function runDemo(): Promise<void> {
   if (plannerMode !== "fixture" && plannerMode !== "opencode") {
     throw new Error("--planner must be fixture or opencode")
   }
+  const workerMode = readFlag("--workers") ?? settings.defaultWorkers
+  if (workerMode !== "fixture" && workerMode !== "opencode") {
+    throw new Error("--workers must be fixture or opencode")
+  }
   const autoApprove = args.includes("--approve-all")
   if (headless && manifest.mode === "supervised" && !autoApprove) {
     throw new Error("Headless supervised mode requires --approve-all; interactive approval needs a TTY")
@@ -94,28 +107,35 @@ async function runDemo(): Promise<void> {
     "fixture.read": fixtureAdapter,
     "fixture.compare": fixtureAdapter,
   })
-  let planner: RootPlanner = new FixtureRootPlanner()
-  if (plannerMode === "opencode") {
+  let reviewer: OpenCodeRuntime | undefined
+  if (plannerMode === "opencode" || workerMode === "opencode") {
     if (!provider) {
-      throw new Error("OpenCode planning requires a provider and model. Configure them in Settings or run `cyrion providers --select`.")
+      throw new Error("OpenCode planning or workers require a provider and model. Configure them in Settings or run `cyrion providers --select`.")
     }
     const readiness = await inspectOpenCodeProviders(process.cwd(), provider)
     if (!readiness.ready) {
       const detail = readiness.error
         ?? "the selected provider, model, or credential is unavailable"
-      throw new Error(`OpenCode planning is not ready: ${detail}. Run \`cyrion providers --check\`.`)
+      throw new Error(`OpenCode runtime is not ready: ${detail}. Run \`cyrion providers --check\`.`)
     }
-    const reviewer = new OpenCodeRuntime({
+    reviewer = new OpenCodeRuntime({
       agentsDir: join(projectRoot, "agents"),
       directory: process.cwd(),
       providerID: provider.providerID,
       modelID: provider.modelID,
     })
-    planner = new GuardedRootPlanner(new FixtureRootPlanner(), reviewer)
   }
+  const fixtureRuntime = new FixtureAgentRuntime({ scenario: scenario as FixtureScenario })
+  const runtime: AgentRuntime = workerMode === "opencode"
+    ? new GuardedAgentRuntime(fixtureRuntime, reviewer!)
+    : fixtureRuntime
+  const fixturePlanner = new FixtureRootPlanner()
+  const planner: RootPlanner = plannerMode === "opencode"
+    ? new GuardedRootPlanner(fixturePlanner, reviewer!)
+    : fixturePlanner
   const controller = new CyrionController(
     manifest as EngagementManifest,
-    new FixtureAgentRuntime({ scenario: scenario as FixtureScenario }),
+    runtime,
     planner,
     join(projectRoot, "agents"),
     { ...(store ? { store } : {}), toolGateway, autoApprove, evidenceStore },
@@ -124,15 +144,19 @@ async function runDemo(): Promise<void> {
   if (headless) {
     controller.events.subscribe((event) => console.log(JSON.stringify(event)))
     const result = await controller.run()
-    console.log(JSON.stringify(statusSummary(result, scenario)))
+    console.log(JSON.stringify(statusSummary(result, scenario, { planner: plannerMode, workers: workerMode })))
     controller.close()
     if (result.status !== "completed") process.exitCode = 1
     return
   }
 
   await runTui(controller, evidenceStore, {
-    mode: plannerMode === "opencode" ? "hybrid" : "fixture",
-    ...(provider ? { provider: `${provider.providerID}/${provider.modelID} (${plannerMode === "opencode" ? "ACTIVE" : "CONFIGURED"})` } : {}),
+    mode: plannerMode === "opencode" || workerMode === "opencode" ? "hybrid" : "fixture",
+    planner: plannerMode,
+    workers: workerMode,
+    ...(provider ? {
+      provider: `${provider.providerID}/${provider.modelID} (${plannerMode === "opencode" || workerMode === "opencode" ? "ACTIVE" : "CONFIGURED"})`,
+    } : {}),
   })
   controller.close()
 }
@@ -285,7 +309,11 @@ function readDurableSnapshot(): { snapshot: EngagementSnapshot; close: () => voi
   return { snapshot, close: () => store.close() }
 }
 
-function statusSummary(snapshot: EngagementSnapshot, scenario?: string): StatusSummary {
+function statusSummary(
+  snapshot: EngagementSnapshot,
+  scenario?: string,
+  runtime?: { planner: "fixture" | "opencode"; workers: "fixture" | "opencode" },
+): StatusSummary {
   return {
     status: snapshot.status,
     mode: snapshot.manifest.mode,
@@ -298,6 +326,7 @@ function statusSummary(snapshot: EngagementSnapshot, scenario?: string): StatusS
     rejected: snapshot.findings.filter((finding) => finding.status === "rejected").length,
     inconclusive: snapshot.findings.filter((finding) => finding.status === "inconclusive").length,
     evidence: snapshot.evidence.length,
+    ...(runtime ?? {}),
     ...(snapshot.pendingApproval ? { approval: snapshot.pendingApproval.status } : {}),
   }
 }
@@ -336,6 +365,7 @@ function usage(): string {
     "",
     "Usage:",
     "  cyrion demo [--headless] [--fixture <scenario>] [--planner fixture|opencode]",
+    "              [--workers fixture|opencode]",
     "              [--mode autonomous|supervised] [--approve-all]",
     "              [--state <sqlite-path>] [--artifacts <directory>]",
     "  cyrion providers [--json] [--check] [--select]",
@@ -344,7 +374,7 @@ function usage(): string {
     "  cyrion version",
     "",
     "Fixture scenarios: known-positive, clean, rejected, incomplete",
-    "OpenCode planning reviews bounded fixture transitions and may make billable model requests.",
+    "OpenCode planning and worker review may make billable model requests.",
     "Headless supervised runs require --approve-all.",
   ].join("\n")
 }

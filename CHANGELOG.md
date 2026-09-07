@@ -4,6 +4,12 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added guarded role-specific OpenCode worker review. Providers may summarize
+  or flag canonical fixture results while findings, evidence, provenance,
+  verdicts, and report content remain immutable controller inputs.
+- Cache structured-output incompatibility per OpenCode runtime and use strict
+  JSON text mode for subsequent reviews; expanded demo deadlines to three
+  minutes for slower provider-backed sessions.
 - Added guarded OpenCode Root planning with CLI and Settings selection. The
   provider can review or stop exact controller-generated transitions but cannot
   alter their task identities, targets, capabilities, or dependencies.
