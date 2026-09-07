@@ -38,6 +38,7 @@
     "build": "bun run scripts/build-release.ts",
     "check": "bun run typecheck && bun test",
     "release:check": "bun run check && bun run build && bun run scripts/verify-release.ts",
+    "release:artifacts": "bun run release:check && bun run scripts/generate-release-artifacts.ts",
     "prepack": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

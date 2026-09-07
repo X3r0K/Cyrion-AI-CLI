@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 const projectRoot = join(import.meta.dir, "..")
 const sandbox = await mkdtemp(join(tmpdir(), "cyrion-release-"))
+const installCache = join(sandbox, "bun-cache")
+const processTemp = join(sandbox, "tmp")
 
 try {
+  await mkdir(installCache, { mode: 0o700 })
+  await mkdir(processTemp, { mode: 0o700 })
   await run(["npm", "pack", "--ignore-scripts", "--silent", "--pack-destination", sandbox], projectRoot)
   const filename = (await readdir(sandbox)).find((entry) => entry.endsWith(".tgz"))
   if (!filename) throw new Error("npm pack did not return a package filename")
@@ -24,15 +28,26 @@ try {
   await run(["tar", "-xzf", tarball, "-C", sandbox], projectRoot)
 
   const packageRoot = join(sandbox, "package")
-  const executable = join(packageRoot, "dist/cyrion.js")
-  await stat(executable)
+  await stat(join(packageRoot, "dist/cyrion.js"))
   await stat(join(packageRoot, "agents/root/system.md"))
   await stat(join(packageRoot, "fixtures/manifest.json"))
   await stat(join(packageRoot, "workers/fixture-worker.ts"))
 
-  const packageMetadata = await Bun.file(join(packageRoot, "package.json")).json() as { version?: string }
-  const version = (await run(["bun", executable, "version"], sandbox)).trim()
-  if (!packageMetadata.version || version !== packageMetadata.version) {
+  const packageMetadata = await Bun.file(join(packageRoot, "package.json")).json() as { name?: string; version?: string }
+  if (!packageMetadata.name || !packageMetadata.version) throw new Error("Packed package identity is missing")
+  const consumer = join(sandbox, "consumer")
+  await mkdir(consumer, { mode: 0o700 })
+  await writeFile(join(consumer, "package.json"), JSON.stringify({
+    private: true,
+    dependencies: { [packageMetadata.name]: `file:${tarball}` },
+  }))
+  await run(["bun", "install", "--ignore-scripts"], consumer)
+  const installedRoot = join(consumer, "node_modules", packageMetadata.name)
+  const executable = join(installedRoot, "dist/cyrion.js")
+  await stat(executable)
+
+  const version = (await run(["bun", executable, "version"], consumer)).trim()
+  if (version !== packageMetadata.version) {
     throw new Error(`Packed CLI version ${version} does not match package version ${packageMetadata.version ?? "missing"}`)
   }
 
@@ -41,7 +56,7 @@ try {
   const demo = await run([
     "bun", executable, "demo", "--headless", "--fixture", "known-positive",
     "--state", statePath, "--artifacts", artifactsPath,
-  ], sandbox)
+  ], consumer)
   const finalLine = demo.trim().split("\n").at(-1)
   const summary = JSON.parse(finalLine ?? "null") as { status?: string; confirmed?: number }
   if (summary.status !== "completed" || summary.confirmed !== 1) {
@@ -53,7 +68,7 @@ try {
     "--mode", "supervised", "--approve-all",
     "--state", join(sandbox, "supervised.sqlite"),
     "--artifacts", join(sandbox, "supervised-artifacts"),
-  ], sandbox)
+  ], consumer)
   const supervisedLines = supervised.trim().split("\n")
   const supervisedSummary = JSON.parse(supervisedLines.at(-1) ?? "null") as { status?: string }
   if (
@@ -64,7 +79,7 @@ try {
     throw new Error("Packed supervised demo did not exercise the approval gate")
   }
 
-  const status = await run(["bun", executable, "status", "ENG-0042", "--state", statePath, "--json"], sandbox)
+  const status = await run(["bun", executable, "status", "ENG-0042", "--state", statePath, "--json"], consumer)
   const statusResult = JSON.parse(status) as { status?: string; evidence?: number }
   if (statusResult.status !== "completed" || statusResult.evidence !== 6) {
     throw new Error("Packed status command did not read durable state")
@@ -72,7 +87,7 @@ try {
 
   const report = await run([
     "bun", executable, "report", "ENG-0042", "--state", statePath, "--format", "markdown",
-  ], sandbox)
+  ], consumer)
   if (!report.includes("## Evidence index") || !report.includes("**CONFIRMED**")) {
     throw new Error("Packed report command did not render the expected report")
   }
@@ -87,7 +102,14 @@ async function run(command: string[], cwd: string): Promise<string> {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...Bun.env, NPM_CONFIG_CACHE: join(sandbox, "npm-cache") },
+    env: {
+      ...Bun.env,
+      BUN_INSTALL_CACHE_DIR: installCache,
+      NPM_CONFIG_CACHE: join(sandbox, "npm-cache"),
+      TEMP: processTemp,
+      TMP: processTemp,
+      TMPDIR: processTemp,
+    },
   })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(process.stdout).text(),

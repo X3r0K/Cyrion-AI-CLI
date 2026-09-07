@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added a repeatable release-artifact command that emits the npm tarball, a
+  CycloneDX 1.6 production-dependency SBOM, and SHA-256 checksums after testing
+  the installed package from a clean temporary consumer.
 - Made the controller own the engagement evidence store and require canonical
   metadata plus SHA-256 verification before accepting worker evidence.
 - Added recovery-time evidence revalidation and adversarial tests for missing,
