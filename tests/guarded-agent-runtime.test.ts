@@ -43,6 +43,23 @@ describe("guarded OpenCode worker review", () => {
     expect(result.summary).toBe("Canonical inventory captured.\n[PROVIDER FLAG] The result needs operator attention.")
     expect(result.evidence).toEqual(canonical.evidence)
   })
+
+  test("rejects a malformed canonical result before invoking the provider", async () => {
+    const runtime = runtimeFor({ ...canonicalResult(), summary: "bad\u0000summary" })
+    let reviewed = false
+    const reviewer = reviewerFor("accept", "must not run")
+    reviewer.reviewTask = async () => {
+      reviewed = true
+      return {
+        review: { verdict: "accept", summary: "must not run" },
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      }
+    }
+    const guarded = new GuardedAgentRuntime(runtime, reviewer)
+
+    await expect(guarded.runTask(task(), context())).rejects.toThrow("Invalid WorkerResult")
+    expect(reviewed).toBe(false)
+  })
 })
 
 function runtimeFor(result: WorkerResult): AgentRuntime & { cancelled: boolean; closed: boolean } {

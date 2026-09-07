@@ -43,6 +43,15 @@ describe("controlled assessment workflow", () => {
       expect(result.evidence.every((reference) => reference.source && reference.contentType && reference.sizeBytes)).toBe(true)
       for (const reference of result.evidence) expect(await evidenceStore.verify(reference)).toBe(true)
 
+      const comparison = result.evidence.find((reference) => reference.id === "E-013")
+      expect(comparison).toBeDefined()
+      const comparisonPayload = JSON.parse(new TextDecoder().decode(await evidenceStore.read(comparison!)))
+      if (item.scenario === "clean") {
+        expect(comparisonPayload).toEqual({ roleA: 200, roleB: 403, objectBoundaryEnforced: true })
+      } else if (item.scenario === "known-positive") {
+        expect(comparisonPayload).toEqual({ roleA: 200, roleB: 200, objectBoundaryBypassed: true })
+      }
+
       const report = result.tasks.find((task) => task.role === "reporter")?.result?.report
       expect(report).toContain(`Scenario: ${item.scenario}`)
       if (item.scenario === "clean") {

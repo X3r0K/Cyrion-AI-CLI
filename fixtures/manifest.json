@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": "2026.09.0",
+  "fixtureVersion": "2026.09.1",
   "contractVersion": "cyrion.community/v1",
   "scenarios": {
     "known-positive": {

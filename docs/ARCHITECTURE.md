@@ -66,11 +66,24 @@ target, repository, host shell, or evidence store.
 
 Guarded worker review uses the same asymmetry. An isolated fixture worker first
 executes its controller-bound tool and captures canonical evidence. A
-role-specific provider session then sees only the task envelope and public
-result metadata. It may append a labeled public review or flag the result for
-attention; the canonical summary, findings, evidence, provenance, validation verdicts, and report
-content remain unchanged. Provider usage is merged into the worker result and
-enforced by the controller budget before admission.
+role-specific provider session then sees the task envelope, public result
+metadata, and a deliberately bounded evidence-review bundle. Only textual
+artifacts whose returned reference exactly matches canonical store metadata and
+whose engagement namespace and worker source match the active task, and whose
+bytes pass digest and size verification, receive a body preview. Previews are
+capped at 32 artifacts, 4 KiB per artifact, and 12 KiB total; non-text,
+invalid, mismatched, inaccessible, unknown-size, or greater-than-1-MiB source
+artifacts remain metadata-only. Preview content is serialized and labeled as
+untrusted data, never instructions.
+
+The provider may append a labeled public review or flag the result for
+attention; the canonical summary, findings, evidence, provenance, validation
+verdicts, and report content remain unchanged. Provider usage is merged into
+the worker result and enforced by the controller budget before admission. This
+preview preflight does not admit evidence: the controller repeats its
+authoritative checks after provider review, closing later mutation attempts.
+The complete worker result also passes its public runtime contract before any
+field can enter the provider prompt.
 
 ## Controller state
 
@@ -108,6 +121,10 @@ The local evidence store writes an immutable-intent artifact and a separate
 metadata record, both with owner-only file permissions. References use portable
 `artifact://` URIs; SHA-256 and byte length allow the controller, reporter, or
 operator to detect missing or modified content.
+
+Selecting OpenCode worker review is an explicit external-data boundary. The
+task envelope, canonical public result, and verified textual preview bundle are
+sent to the configured provider. Fixture mode keeps all artifact content local.
 
 The product terminal receives the same `EvidenceStore` instance as the
 controller. Its inspector performs an integrity check before rendering a bounded,

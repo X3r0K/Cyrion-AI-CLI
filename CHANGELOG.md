@@ -4,6 +4,12 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added evidence-aware guarded worker review with exact metadata matching,
+  engagement/worker binding, post-read SHA-256/size verification, and bounded
+  text-only provider previews; malformed worker results are rejected before a
+  provider call, non-text or invalid evidence remains metadata-only, and
+  controller admission still runs afterward. Clarified the harmless fixture comparison fields so
+  clean enforcement and the known-positive bypass cannot be confused.
 - Added guarded role-specific OpenCode worker review. Providers may summarize
   or flag canonical fixture results while findings, evidence, provenance,
   verdicts, and report content remain immutable controller inputs.

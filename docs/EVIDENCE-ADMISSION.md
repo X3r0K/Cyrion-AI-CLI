@@ -26,6 +26,14 @@ A failure emits a bounded `task.result.rejected` reason, marks the task failed,
 and leaves the engagement evidence index unchanged. The rejected provider
 payload and artifact body are not copied into the event log.
 
+Guarded OpenCode worker review performs a separate provider-disclosure preflight
+before review. It repeats the canonical metadata comparison and verifies both
+the current engagement/worker binding, store, and bytes actually read before
+including a bounded textual preview. This is not admission and cannot make
+evidence trusted: the controller still runs the sequence above after review. If
+bytes change between those two points, normal admission rejects the worker
+result.
+
 Recovery applies the same checks to a durable `task.completed` event before it
 is accepted. If its artifact is missing, its metadata differs, or its digest no
 longer verifies, the controller records the rejection and requeues the same
@@ -53,4 +61,5 @@ provenance, and independent-validation responsibilities.
 There is also an unavoidable time-of-check/time-of-use window for files that an
 external process can modify. The terminal inspector verifies again immediately
 before previewing an artifact so later tampering remains visible to the
-operator.
+operator. Provider review similarly hashes the bytes it reads, and the
+controller re-verifies them afterward.

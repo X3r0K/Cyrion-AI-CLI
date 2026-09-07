@@ -177,9 +177,10 @@ export class FixtureAgentRuntime implements AgentRuntime {
   }
 
   #comparisonPayload(): unknown {
+    if (this.#scenario === "clean") return { roleA: 200, roleB: 403, objectBoundaryEnforced: true }
     if (this.#scenario === "rejected") return { roleA: 200, roleB: 200, bodyDifference: "volatile timestamp only" }
     if (this.#scenario === "incomplete") return { roleA: 200, roleB: null, interrupted: true }
-    return { roleA: 200, roleB: 403, objectBoundaryMismatch: true }
+    return { roleA: 200, roleB: 200, objectBoundaryBypassed: true }
   }
 
   #validationVerdict(): Exclude<FindingStatus, "candidate" | "validating"> {

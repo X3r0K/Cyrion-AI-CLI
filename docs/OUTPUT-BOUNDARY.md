@@ -9,6 +9,14 @@ an `accept`/`flag` review and labeled public summary are admitted. The canonical
 worker's summary, observations, findings, evidence, report, and provenance are copied
 unchanged, then the complete result passes the normal controller gates.
 
+The provider input is bounded too. Evidence bodies are included only for
+textual artifacts after engagement/worker binding, exact canonical-metadata
+comparison, store verification, and a second digest/size check of the bytes
+actually read.
+Individual, total, and artifact-count caps constrain disclosure. Every preview
+is explicitly untrusted prompt data; provider instructions found inside it have
+no authority. Failed checks and non-text content produce metadata-only records.
+
 ## Contract validation
 
 - Engagement manifests, Root decisions, worker results, evidence references,

@@ -60,10 +60,16 @@ cyrion demo --planner opencode --workers opencode
 OpenCode may accept or stop each exact controller-generated transition and may
 replace only its rationale. It cannot invent task IDs, targets, capabilities,
 or dependencies. Role-specific OpenCode sessions may also review canonical
-worker outputs and append only labeled public review summaries. Tool execution,
-findings, evidence, provenance, verdicts, and report content remain deterministic
-and isolated. This is not a live network assessment adapter. Model requests may
-incur provider charges.
+worker outputs and append only labeled public review summaries. When worker
+review is enabled, Cyrion sends the task envelope, canonical public result, and
+small previews of hash-verified textual evidence to the selected provider.
+Preview disclosure is capped at 32 artifacts, 4 KiB each, and 12 KiB total;
+binary, invalid, mismatched, inaccessible, unknown-size, and greater-than-1-MiB
+source artifacts remain metadata-only.
+Treat this as an external data transfer and use fixture workers when evidence
+must remain entirely local. Tool execution, findings, evidence, provenance,
+verdicts, and report content remain deterministic and isolated. This is not a
+live network assessment adapter. Model requests may incur provider charges.
 
 The packaged demo manifests allow three minutes so slower local or free models
 can finish their reviews while the controller continues lease heartbeats. The

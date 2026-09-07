@@ -1,9 +1,10 @@
-import type {
-  AgentRuntime,
-  ResourceUsage,
-  RuntimeContext,
-  TaskSpec,
-  WorkerResult,
+import {
+  assertWorkerResult,
+  type AgentRuntime,
+  type ResourceUsage,
+  type RuntimeContext,
+  type TaskSpec,
+  type WorkerResult,
 } from "@cyrion/contracts"
 
 export interface WorkerResultReview {
@@ -38,6 +39,7 @@ export class GuardedAgentRuntime implements AgentRuntime {
 
   async runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
     const canonical = await this.#runtime.runTask(task, context)
+    assertWorkerResult(canonical)
     const { review, usage } = await this.#reviewer.reviewTask(task, context, canonical)
     const label = review.verdict === "flag" ? "PROVIDER FLAG" : "PROVIDER REVIEW"
     const summary = boundedSummary(`${canonical.summary}\n[${label}] ${review.summary}`)

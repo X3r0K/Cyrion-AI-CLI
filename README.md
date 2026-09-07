@@ -32,7 +32,10 @@ and provider-execution boundary. After provider readiness passes, use
 `cyrion demo --planner opencode` for guarded provider review of each exact Root
 transition; isolated fixture workers continue to own tools and evidence.
 Add `--workers opencode` to let role-specific provider sessions review each
-canonical worker result and write its public summary:
+canonical worker result and write its public summary. This explicitly sends
+the task envelope, public result, and bounded previews of verified textual
+evidence to the selected provider; use fixture mode when evidence must stay
+entirely local:
 
 ```bash
 cyrion demo --planner opencode --workers opencode
