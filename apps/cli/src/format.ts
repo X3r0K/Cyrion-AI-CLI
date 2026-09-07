@@ -1,12 +1,28 @@
 import { StyledText, bg, bold, fg, type TextChunk } from "@opentui/core"
 import type { AgentRole, AgentStatus, EngagementSnapshot, Finding, TaskStatus } from "@cyrion/contracts"
+import type { ProviderSummary } from "@cyrion/runtime-opencode"
+import {
+  selectedSettingsField,
+  settingsAreDirty,
+  settingsFields,
+  valueForField,
+  type SettingsEditorState,
+  type SettingsField,
+} from "./settings-ui"
 import { theme } from "./theme"
 
-export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE"
+export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE" | "SETTINGS"
 
 export interface RuntimeDisplay {
   mode: "fixture" | "opencode"
   provider?: string
+}
+
+export interface SettingsDisplay {
+  environmentPath: string
+  providers: ProviderSummary[]
+  discovery: "idle" | "loading" | "ready" | "failed"
+  message?: string
 }
 
 export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: string): StyledText {
@@ -256,9 +272,10 @@ export function formatCommandHelp(): StyledText {
   const chunks: TextChunk[] = []
   appendLine(chunks, [strong("COMMANDS")])
   appendRule(chunks)
-  appendLine(chunks, [accent("1–4       "), plain("Mission / Swarm / Findings / Evidence")])
+  appendLine(chunks, [accent("1–5       "), plain("Mission / Swarm / Findings / Evidence / Settings")])
   appendLine(chunks, [accent("↑ ↓ / j k "), plain("Move current selection")])
-  appendLine(chunks, [accent("← → / h l "), plain("Move between views")])
+  appendLine(chunks, [accent("← →       "), plain("Move views; adjust values in Settings")])
+  appendLine(chunks, [accent("h / l     "), plain("Move between views from any page")])
   appendLine(chunks, [accent("Enter / e "), plain("Open supporting evidence")])
   appendLine(chunks, [accent("Tab / i   "), plain("Focus or leave Root chat")])
   appendLine(chunks, [accent("p         "), plain("Pause or resume dispatch")])
@@ -269,6 +286,72 @@ export function formatCommandHelp(): StyledText {
   appendLine(chunks, [success("■ SCOPE LOCKED")])
   appendLine(chunks, [success("■ LOCAL ARTIFACTS")])
   appendLine(chunks, [warning("◇ FIXTURE WORKERS ONLY")], false)
+  return new StyledText(chunks)
+}
+
+export function formatSettings(state: SettingsEditorState, display: SettingsDisplay): StyledText {
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("GENERAL SETTINGS"), dim("  /  NEXT LAUNCH")])
+  appendRule(chunks, 62)
+  appendLine(chunks, [dim("    OPTION                 VALUE")])
+  for (const [index, field] of settingsFields.entries()) {
+    const selected = index === state.selectedIndex
+    const label = settingLabel(field).padEnd(22)
+    const value = formatSettingValue(field, valueForField(state.draft, field), display, state.draft.providerID)
+    const row = `${selected ? "›" : " "}   ${label} ${value}`
+    appendLine(chunks, [selected ? bg(theme.selection)(accent(row)) : plain(row)])
+  }
+  appendRule(chunks, 62)
+  appendLine(chunks, [
+    settingsAreDirty(state) ? warning("◇ UNSAVED CHANGES") : success("■ SAVED"),
+    dim("   [← →] change   [s] save   [r] revert   [d] discover"),
+  ])
+  if (display.message) appendLine(chunks, [dim("status  >  "), plain(sanitizeTerminalText(display.message, 180))])
+  return new StyledText(chunks)
+}
+
+export function formatSettingsInspector(state: SettingsEditorState, display: SettingsDisplay): StyledText {
+  const field = selectedSettingsField(state)
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("SETTING INSPECTOR")])
+  appendRule(chunks)
+  appendLine(chunks, [accent(settingLabel(field).toUpperCase())])
+  appendLine(chunks, [])
+  appendLine(chunks, [plain(settingDescription(field))])
+  appendSection(chunks, "CURRENT VALUE", 30)
+  appendLine(chunks, [plain(formatSettingValue(field, valueForField(state.draft, field), display, state.draft.providerID))])
+  if (field === "provider" || field === "model") {
+    const provider = display.providers.find((item) => item.id === state.draft.providerID)
+    appendSection(chunks, "OPENCODE", 30)
+    appendLine(chunks, [dim("Discovery     "), discoveryStatus(display.discovery)])
+    appendLine(chunks, [dim("Provider      "), provider ? success("■ CONNECTED") : warning("◇ NOT DISCOVERED")])
+    const modelAvailable = provider?.models.some((model) => model.id === state.draft.modelID) ?? false
+    appendLine(chunks, [dim("Model         "), modelAvailable ? success("■ AVAILABLE") : warning("◇ NOT DISCOVERED")])
+    appendLine(chunks, [])
+    appendLine(chunks, [dim("Credentials are managed by OpenCode and never rendered here.")])
+  }
+  appendSection(chunks, "APPLY", 30)
+  appendLine(chunks, [plain("Saved settings take effect on the next Cyrion launch.")])
+  appendLine(chunks, [dim("The active engagement is never mutated by this page.")], false)
+  return new StyledText(chunks)
+}
+
+export function formatSettingsSidebar(
+  state: SettingsEditorState,
+  display: SettingsDisplay,
+  runtime: RuntimeDisplay,
+): StyledText {
+  const chunks: TextChunk[] = []
+  appendLine(chunks, [strong("CONFIGURATION")])
+  appendRule(chunks)
+  appendLine(chunks, [success("■ CREDENTIALS HIDDEN")])
+  appendLine(chunks, [success("■ OWNER-ONLY FILE")])
+  appendLine(chunks, [settingsAreDirty(state) ? warning("◇ DRAFT MODIFIED") : success("■ DRAFT SYNCED")])
+  appendSection(chunks, "CURRENT SESSION", 28)
+  appendKeyValue(chunks, "Runtime", runtime.mode.toUpperCase())
+  appendKeyValue(chunks, "LLM", runtime.provider ?? "NOT CONFIGURED")
+  appendSection(chunks, "CONFIG FILE", 28)
+  appendLine(chunks, [dim(sanitizeTerminalText(display.environmentPath, 180))], false)
   return new StyledText(chunks)
 }
 
@@ -445,6 +528,41 @@ function validationVerdict(value: Finding["status"]): TextChunk {
   if (value === "rejected") return fg(theme.danger)("■ REPRODUCTION REJECTED")
   if (value === "inconclusive") return warning("◇ REPRODUCTION INCONCLUSIVE")
   return warning("◇ REPRODUCTION PENDING")
+}
+
+function settingLabel(field: SettingsField): string {
+  if (field === "provider") return "LLM provider"
+  if (field === "model") return "LLM model"
+  if (field === "defaultMode") return "Default mode"
+  if (field === "defaultFixture") return "Demo scenario"
+  return "Color profile"
+}
+
+function settingDescription(field: SettingsField): string {
+  if (field === "provider") return "Connected OpenCode provider used by future LLM-backed runtime sessions."
+  if (field === "model") return "Model selected from the active provider's discovered catalog."
+  if (field === "defaultMode") return "Default controller supervision policy when --mode is not supplied."
+  if (field === "defaultFixture") return "Default deterministic demo scenario when --fixture is not supplied."
+  return "Terminal color behavior. Auto follows NO_COLOR; explicit profiles override it."
+}
+
+function formatSettingValue(field: SettingsField, value: string, display: SettingsDisplay, providerID: string): string {
+  if (field === "provider") {
+    const provider = display.providers.find((item) => item.id === value)
+    return provider ? `${provider.name} / ${provider.id}` : value || "NOT CONFIGURED"
+  }
+  if (field === "model") {
+    const model = display.providers.find((provider) => provider.id === providerID)?.models.find((item) => item.id === value)
+    return model && model.name !== model.id ? `${model.name} / ${model.id}` : value || "NOT CONFIGURED"
+  }
+  return value.toUpperCase().replaceAll("-", " ")
+}
+
+function discoveryStatus(value: SettingsDisplay["discovery"]): TextChunk {
+  if (value === "ready") return success("■ READY")
+  if (value === "loading") return warning("◇ DISCOVERING")
+  if (value === "failed") return fg(theme.danger)("! FAILED")
+  return dim("◇ NOT STARTED")
 }
 
 function remediationFor(value: Finding["status"]): string {

@@ -15,7 +15,7 @@ import {
   type ProviderStatus,
 } from "@cyrion/runtime-opencode"
 import { runTui } from "./tui"
-import { saveProviderSelection } from "./provider-config"
+import { readGeneralSettings, saveProviderSelection } from "./provider-config"
 
 export const CLI_VERSION = "0.1.0-alpha.1"
 
@@ -52,10 +52,11 @@ try {
 }
 
 async function runDemo(): Promise<void> {
+  const settings = readGeneralSettings(Bun.env)
   const provider = readProviderSelection(Bun.env)
   const headless = args.includes("--headless") || !process.stdout.isTTY
   const scenarios: FixtureScenario[] = ["known-positive", "clean", "rejected", "incomplete"]
-  const scenario = readFlag("--fixture") ?? "known-positive"
+  const scenario = readFlag("--fixture") ?? settings.defaultFixture
   if (!scenarios.includes(scenario as FixtureScenario)) {
     throw new Error(`Unknown fixture scenario: ${scenario}. Choose ${scenarios.join(", ")}.`)
   }
@@ -64,11 +65,11 @@ async function runDemo(): Promise<void> {
     : join(projectRoot, "fixtures/scenarios", `${scenario}.json`)
   const manifest = await Bun.file(manifestPath).json()
   assertManifest(manifest)
-  const mode = readFlag("--mode")
+  const mode = readFlag("--mode") ?? settings.defaultMode
   if (mode && mode !== "autonomous" && mode !== "supervised") {
     throw new Error("--mode must be autonomous or supervised")
   }
-  if (mode) manifest.mode = mode === "supervised" ? "supervised" : "autonomous"
+  manifest.mode = mode === "supervised" ? "supervised" : "autonomous"
   const autoApprove = args.includes("--approve-all")
   if (headless && manifest.mode === "supervised" && !autoApprove) {
     throw new Error("Headless supervised mode requires --approve-all; interactive approval needs a TTY")

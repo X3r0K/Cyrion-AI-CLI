@@ -12,6 +12,7 @@ finding, and evidence reference comes from the public engagement snapshot.
 | `2` | Swarm | Select every dispatched worker and inspect its assignment, capabilities, lease, events, and result. |
 | `3` | Findings | Select a finding, read its validation state, and press `Enter` or `e` to follow its first supporting artifact. |
 | `4` | Evidence | Select artifacts and inspect metadata, SHA-256 status, and a bounded local preview. |
+| `5` | Settings | Review and edit provider, model, default mode, demo scenario, and color profile. |
 
 Use arrow keys or `j`/`k` to move within a view. Use left/right or `h`/`l` to
 move between views. Press `?` or `Ctrl+K` for the in-product command reference.
@@ -19,6 +20,14 @@ move between views. Press `?` or `Ctrl+K` for the in-product command reference.
 Run `cyrion providers --select` before opening the dashboard to choose a model
 from the providers OpenCode reports as connected. The active selection is shown
 in the mission briefing and engagement inspector.
+
+In Settings, use up/down or `j`/`k` to select a field and left/right to cycle
+its available values. Press `s` to save, `r` to discard draft changes, and `d`
+to refresh OpenCode discovery. The page writes only Cyrion-managed keys to the
+owner-only `.env` file, preserves credential lines without rendering them, and
+applies saved defaults on the next launch. The active engagement is not
+mutated. Use `h`/`l` or a numbered shortcut to leave the view while left/right
+is reserved for editing.
 
 The dashboard owns the keyboard by default. Press `i` or `Tab` to focus Root
 chat, `Enter` to send, and `Escape` or `Tab` to return to navigation. Root chat

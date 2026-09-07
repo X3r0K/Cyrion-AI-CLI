@@ -1,4 +1,6 @@
-const colorEnabled = process.env.NO_COLOR === undefined
+const configuredColorMode = process.env.CYRION_COLOR_MODE?.trim()
+const colorEnabled = configuredColorMode === "color"
+  || (configuredColorMode !== "monochrome" && process.env.NO_COLOR === undefined)
 
 export interface CyrionTheme {
   background: string

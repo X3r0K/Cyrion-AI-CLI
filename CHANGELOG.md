@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added a fifth terminal Settings view for safe provider/model selection and
+  persisted mode, fixture, and color defaults without rendering or rewriting
+  provider credentials.
 - Fixed packaged and globally linked TUI startup by resolving OpenTUI native
   libraries through explicit platform-specific optional dependencies, with a
   packed-consumer TUI smoke check in the release gate.

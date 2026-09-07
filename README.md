@@ -33,11 +33,12 @@ Use `bun run apps/cli/src/index.ts providers --select` to choose interactively
 from the providers and models OpenCode reports as connected.
 
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
-supports `1`–`4` to switch views, arrows or `j`/`k` to select workers, findings,
-and evidence, `Enter` to inspect, `i` to focus Root chat, `p` to pause/resume
-dispatch, and `q` to quit. If work is still active, `q` cancels the leased
-workers before returning control to the shell. Press `?` for the full keyboard
-reference.
+supports `1`–`5` to switch views, arrows or `j`/`k` to select rows, `Enter` to
+inspect, `i` to focus Root chat, `p` to pause/resume dispatch, and `q` to quit.
+The fifth view edits general settings: use left/right to change a value, `s` to
+save, `r` to revert, and `d` to refresh OpenCode discovery. If work is still
+active, `q` cancels the leased workers before returning control to the shell.
+Press `?` for the full keyboard reference.
 
 Exercise the durable supervisor gate with `bun run demo -- --mode supervised`.
 Every Root delegation must be approved with `a` or denied with `x` before tasks

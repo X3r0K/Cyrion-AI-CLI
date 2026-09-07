@@ -144,17 +144,38 @@ async function runTuiSmoke(executable: string, cwd: string): Promise<void> {
       TMPDIR: processTemp,
     },
   })
-  const timeout = setTimeout(() => child.kill(), 10_000)
-  await Bun.sleep(500)
-  child.stdin.write("q")
-  child.stdin.end()
+  let timedOut = false
+  let quitSent = false
+  const stdoutPromise = readOutput(child.stdout, (output) => {
+    if (quitSent || !output.includes("CYRION/AI")) return
+    quitSent = true
+    child.stdin.write("q")
+    child.stdin.end()
+  })
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill()
+  }, 10_000)
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
+    stdoutPromise,
     new Response(child.stderr).text(),
     child.exited,
   ])
   clearTimeout(timeout)
-  if (exitCode !== 0 || !stdout.includes("CYRION/AI")) {
+  if (timedOut || !quitSent || exitCode !== 0 || !stdout.includes("CYRION/AI")) {
     throw new Error(`Packed TUI smoke failed (${exitCode})\n${stderr}${stdout}`)
   }
+}
+
+async function readOutput(stream: ReadableStream<Uint8Array>, onOutput: (output: string) => void): Promise<string> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let output = ""
+  while (true) {
+    const result = await reader.read()
+    if (result.done) break
+    output += decoder.decode(result.value, { stream: true })
+    onOutput(output)
+  }
+  return output + decoder.decode()
 }

@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { chmod, lstat, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { saveProviderSelection, updateProviderEnvironment } from "../apps/cli/src/provider-config"
+import {
+  readGeneralSettings,
+  saveGeneralSettings,
+  saveProviderSelection,
+  updateGeneralEnvironment,
+  updateProviderEnvironment,
+} from "../apps/cli/src/provider-config"
 
 describe("provider selection persistence", () => {
   test("updates only Cyrion provider lines and preserves credentials", () => {
@@ -46,5 +52,69 @@ describe("provider selection persistence", () => {
     expect(saveProviderSelection(path, { providerID: "openai", modelID: "gpt-test" }))
       .rejects.toThrow("Refusing to update symbolic link")
     expect(await readFile(target, "utf8")).toBe("SAFE=value\n")
+  })
+
+  test("updates general settings without exposing or replacing credentials", () => {
+    const source = "OPENCODE_API_KEY=keep-private\nCYRION_DEFAULT_MODE=supervised\n"
+    const updated = updateGeneralEnvironment(source, {
+      providerID: "opencode",
+      modelID: "test-model",
+      defaultMode: "autonomous",
+      defaultFixture: "clean",
+      colorMode: "monochrome",
+    })
+    expect(updated).toContain("OPENCODE_API_KEY=keep-private")
+    expect(updated).toContain("CYRION_DEFAULT_MODE=autonomous")
+    expect(updated).toContain("CYRION_DEFAULT_FIXTURE=clean")
+    expect(updated).toContain("CYRION_COLOR_MODE=monochrome")
+  })
+
+  test("reads validated defaults and rejects unsupported values", () => {
+    expect(readGeneralSettings({})).toEqual({
+      defaultMode: "autonomous",
+      defaultFixture: "known-positive",
+      colorMode: "auto",
+    })
+    expect(() => readGeneralSettings({ CYRION_COLOR_MODE: "transparent" }))
+      .toThrow("CYRION_COLOR_MODE must be one of")
+  })
+
+  test("persists the complete terminal settings profile", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cyrion-general-config-"))
+    const path = join(directory, ".env")
+    await saveGeneralSettings(path, {
+      providerID: "opencode",
+      modelID: "test-model",
+      defaultMode: "supervised",
+      defaultFixture: "incomplete",
+      colorMode: "color",
+    })
+    const output = await readFile(path, "utf8")
+    expect(output).toContain("CYRION_PROVIDER_ID=opencode")
+    expect(output).toContain("CYRION_MODEL_ID=test-model")
+    expect(output).toContain("CYRION_DEFAULT_MODE=supervised")
+    expect(output).toContain("CYRION_DEFAULT_FIXTURE=incomplete")
+    expect(output).toContain("CYRION_COLOR_MODE=color")
+    expect((await lstat(path)).mode & 0o777).toBe(0o600)
+  })
+
+  test("allows fixture defaults without an LLM selection but rejects partial selection", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cyrion-no-provider-config-"))
+    const path = join(directory, ".env")
+    await saveGeneralSettings(path, {
+      providerID: "",
+      modelID: "",
+      defaultMode: "autonomous",
+      defaultFixture: "clean",
+      colorMode: "auto",
+    })
+    expect(await readFile(path, "utf8")).toContain("CYRION_DEFAULT_FIXTURE=clean")
+    expect(saveGeneralSettings(path, {
+      providerID: "opencode",
+      modelID: "",
+      defaultMode: "autonomous",
+      defaultFixture: "clean",
+      colorMode: "auto",
+    })).rejects.toThrow("Choose both an LLM provider and model")
   })
 })

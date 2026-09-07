@@ -9,6 +9,8 @@ import {
   formatEngagement,
   formatFindingDetail,
   formatMission,
+  formatSettings,
+  formatSettingsInspector,
   formatWorkerInspector,
   sanitizeTerminalText,
 } from "../apps/cli/src/format"
@@ -18,6 +20,7 @@ import {
   inspectSelection,
   moveSelection,
 } from "../apps/cli/src/navigation"
+import { createSettingsEditor } from "../apps/cli/src/settings-ui"
 
 const projectRoot = join(import.meta.dir, "..")
 
@@ -146,6 +149,35 @@ describe("product terminal state", () => {
     expect(mission).toContain("[a] APPROVE")
     expect(mission).toContain("[x] DENY")
     expect(mission).toContain("fixture.read")
+  })
+
+  test("renders editable general settings without credential material", () => {
+    const state = createSettingsEditor({
+      providerID: "opencode",
+      modelID: "zen-test",
+      defaultMode: "autonomous",
+      defaultFixture: "known-positive",
+      colorMode: "auto",
+    })
+    const display = {
+      environmentPath: "/workspace/.env",
+      discovery: "ready" as const,
+      providers: [{
+        id: "opencode",
+        name: "OpenCode Zen",
+        source: "api" as const,
+        modelCount: 1,
+        models: [{ id: "zen-test", name: "Zen Test" }],
+      }],
+    }
+    const settings = plainText(formatSettings(state, display))
+    const inspector = plainText(formatSettingsInspector(state, display))
+    expect(settings).toContain("GENERAL SETTINGS")
+    expect(settings).toContain("OpenCode Zen / opencode")
+    expect(settings).toContain("KNOWN POSITIVE")
+    expect(inspector).toContain("CONNECTED")
+    expect(inspector).toContain("Credentials are managed by OpenCode")
+    expect(`${settings}${inspector}`).not.toContain("API_KEY")
   })
 })
 

@@ -29,6 +29,10 @@ environment variable in `.env`. As an alternative to an API-key variable, run
 `opencode auth login`; OpenCode keeps that credential outside this repository.
 Never commit `.env`.
 
+The terminal Settings view can also persist the provider, model, default
+controller mode, demo scenario, and color profile. CLI `--mode` and `--fixture`
+flags override their saved defaults for a single launch.
+
 Check discovery without making a model request:
 
 ```bash
