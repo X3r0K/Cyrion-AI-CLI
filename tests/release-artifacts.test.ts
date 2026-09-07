@@ -15,8 +15,8 @@ describe("release provenance artifacts", () => {
     expect(first.metadata.timestamp).toBe(timestamp)
     expect(first.metadata.component).toEqual(expect.objectContaining({
       name: "cyrion-community",
-      version: "0.1.0-alpha.1",
-      purl: "pkg:npm/cyrion-community@0.1.0-alpha.1",
+      version: "0.1.0-alpha.2",
+      purl: "pkg:npm/cyrion-community@0.1.0-alpha.2",
     }))
 
     const purls = first.components.map((component) => component.purl)

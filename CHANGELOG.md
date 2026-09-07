@@ -4,6 +4,8 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+## 0.1.0-alpha.2 — 2026-09-07
+
 - Added evidence-aware guarded worker review with exact metadata matching,
   engagement/worker binding, post-read SHA-256/size verification, and bounded
   text-only provider previews; malformed worker results are rejected before a

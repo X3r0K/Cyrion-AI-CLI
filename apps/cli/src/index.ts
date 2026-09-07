@@ -26,7 +26,7 @@ import {
 import { runTui } from "./tui"
 import { readGeneralSettings, saveProviderSelection } from "./provider-config"
 
-export const CLI_VERSION = "0.1.0-alpha.1"
+export const CLI_VERSION = "0.1.0-alpha.2"
 
 interface StatusSummary {
   status: EngagementSnapshot["status"]

@@ -1,6 +1,6 @@
 {
   "name": "cyrion-community",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Local-first multi-agent terminal orchestrator for authorized security assessment workflows",
   "license": "MIT",
   "repository": {
