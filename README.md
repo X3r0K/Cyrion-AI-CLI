@@ -23,6 +23,12 @@ bun install
 bun run demo
 ```
 
+The demo uses deterministic fixture workers and does not require an LLM. Copy
+`.env.example` to `.env`, configure an OpenCode provider/model, and run
+`bun run apps/cli/src/index.ts providers` to inspect readiness without sending a
+model request. See [Installation](docs/INSTALLATION.md) for the exact variables
+and the current provider-execution boundary.
+
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
 supports `1`–`4` to switch views, arrows or `j`/`k` to select workers, findings,
 and evidence, `Enter` to inspect, `i` to focus Root chat, `p` to pause/resume

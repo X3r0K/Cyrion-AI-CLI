@@ -24,6 +24,7 @@
     "CONTRIBUTING.md",
     "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md",
+    ".env.example",
     "bun.lock"
   ],
   "type": "module",

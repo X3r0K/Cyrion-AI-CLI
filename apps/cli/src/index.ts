@@ -5,7 +5,14 @@ import { assertManifest, type EngagementManifest, type EngagementSnapshot } from
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
 import { renderJsonReport, renderMarkdownReport } from "@cyrion/reporting"
-import { FixtureAgentRuntime, IsolatedFixtureToolAdapter, type FixtureScenario } from "@cyrion/runtime-opencode"
+import {
+  FixtureAgentRuntime,
+  IsolatedFixtureToolAdapter,
+  inspectOpenCodeProviders,
+  readProviderSelection,
+  type FixtureScenario,
+  type ProviderStatus,
+} from "@cyrion/runtime-opencode"
 import { runTui } from "./tui"
 
 export const CLI_VERSION = "0.1.0-alpha.1"
@@ -32,6 +39,7 @@ const projectRoot = resolveProjectRoot()
 try {
   if (args.includes("--help") || args.includes("-h") || command === "help") console.log(usage())
   else if (args.includes("--version") || command === "version") console.log(CLI_VERSION)
+  else if (command === "providers") await runProviders()
   else if (command === "demo") await runDemo()
   else if (command === "status") runStatus()
   else if (command === "report") runReport()
@@ -42,6 +50,7 @@ try {
 }
 
 async function runDemo(): Promise<void> {
+  const provider = readProviderSelection(Bun.env)
   const headless = args.includes("--headless") || !process.stdout.isTTY
   const scenarios: FixtureScenario[] = ["known-positive", "clean", "rejected", "incomplete"]
   const scenario = readFlag("--fixture") ?? "known-positive"
@@ -93,8 +102,45 @@ async function runDemo(): Promise<void> {
     return
   }
 
-  await runTui(controller, evidenceStore)
+  await runTui(controller, evidenceStore, {
+    mode: "fixture",
+    ...(provider ? { provider: `${provider.providerID}/${provider.modelID} (CONFIGURED)` } : {}),
+  })
   controller.close()
+}
+
+async function runProviders(): Promise<void> {
+  const selection = readProviderSelection(Bun.env)
+  const status = await inspectOpenCodeProviders(process.cwd(), selection)
+  if (args.includes("--json")) console.log(JSON.stringify(status))
+  else console.log(formatProviderStatus(status))
+  if (args.includes("--check") && !status.ready) process.exitCode = 1
+}
+
+function formatProviderStatus(status: ProviderStatus): string {
+  const selected = status.selected
+  const connected = status.connectedProviders.length
+    ? status.connectedProviders.map((provider) => `${provider.id} (${provider.modelCount} models)`).join(", ")
+    : "none"
+  return [
+    "CYRION/AI  PROVIDER READINESS",
+    `OpenCode     ${status.opencodeVersion ?? "NOT FOUND"}`,
+    `selection    ${selected ? `${selected.providerID}/${selected.modelID}` : "NOT CONFIGURED"}`,
+    `connected    ${connected}`,
+    `provider     ${selected ? readinessLabel(selected.providerAvailable) : "-"}`,
+    `model        ${selected ? readinessLabel(selected.modelAvailable) : "-"}`,
+    `credential   ${selected ? readinessLabel(selected.connected) : "-"}`,
+    `ready        ${status.ready ? "YES" : "NO"}`,
+    ...(selected?.requiredEnvironment.length
+      ? [`accepted env ${selected.requiredEnvironment.join(", ")}`]
+      : []),
+    ...(status.error ? [`error        ${status.error}`, "next         run `opencode upgrade`, then retry"] : []),
+    ...(!selected ? ["next         set CYRION_PROVIDER_ID and CYRION_MODEL_ID in .env"] : []),
+  ].join("\n")
+}
+
+function readinessLabel(value: boolean): string {
+  return value ? "OK" : "MISSING"
 }
 
 function runStatus(): void {
@@ -198,6 +244,7 @@ function usage(): string {
     "Usage:",
     "  cyrion demo [--headless] [--fixture <scenario>] [--mode autonomous|supervised] [--approve-all]",
     "              [--state <sqlite-path>] [--artifacts <directory>]",
+    "  cyrion providers [--json] [--check]",
     "  cyrion status <engagement-id> --state <sqlite-path> [--json]",
     "  cyrion report <engagement-id> --state <sqlite-path> [--format markdown|json]",
     "  cyrion version",

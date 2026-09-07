@@ -4,6 +4,11 @@ import { theme } from "./theme"
 
 export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE"
 
+export interface RuntimeDisplay {
+  mode: "fixture" | "opencode"
+  provider?: string
+}
+
 export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: string): StyledText {
   const root = snapshot.agents.find((agent) => agent.role === "root")
   const workers = snapshot.agents.filter((agent) => agent.role !== "root")
@@ -28,10 +33,16 @@ export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: strin
   return new StyledText(chunks)
 }
 
-export function formatMission(snapshot: EngagementSnapshot): StyledText {
+export function formatMission(snapshot: EngagementSnapshot, runtime?: RuntimeDisplay): StyledText {
   const chunks: TextChunk[] = []
   appendLine(chunks, [accent("[ ROOT AGENT / BRIEFING ]")])
   appendLine(chunks, [])
+  if (runtime) {
+    appendLine(chunks, [
+      dim("runtime   >  "),
+      plain(`${runtime.mode.toUpperCase()} / LLM ${runtime.provider ?? "NOT CONFIGURED"}`),
+    ])
+  }
   appendLine(chunks, [dim("operator  >  "), plain(snapshot.manifest.objective)])
   appendLine(chunks, [accent("root      >  "), plain(missionSummary(snapshot))])
   if (snapshot.pendingApproval) {
@@ -261,7 +272,7 @@ export function formatCommandHelp(): StyledText {
   return new StyledText(chunks)
 }
 
-export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
+export function formatEngagement(snapshot: EngagementSnapshot, runtime?: RuntimeDisplay): StyledText {
   const elapsed = snapshot.startedAt
     ? Math.max(0, Math.floor((Date.now() - Date.parse(snapshot.startedAt)) / 1000))
     : 0
@@ -272,6 +283,10 @@ export function formatEngagement(snapshot: EngagementSnapshot): StyledText {
   appendRule(chunks)
   appendKeyValue(chunks, "Target", snapshot.manifest.scope.targets[0] ?? "none")
   appendKeyValue(chunks, "Profile", snapshot.manifest.profile.replace("-", " + ").toUpperCase())
+  if (runtime) {
+    appendKeyValue(chunks, "Runtime", runtime.mode.toUpperCase())
+    appendKeyValue(chunks, "LLM config", runtime.provider ?? "NOT CONFIGURED")
+  }
   appendLine(chunks, [dim("Scope         "), success("■ LOCKED")])
   appendKeyValue(chunks, "Elapsed", `${minutes}:${seconds}`)
   appendSection(chunks, "BUDGET", 28)

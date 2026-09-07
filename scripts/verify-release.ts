@@ -18,7 +18,7 @@ try {
   const checksum = createHash("sha256").update(new Uint8Array(await Bun.file(tarball).arrayBuffer())).digest("hex")
   const listing = await run(["tar", "-tzf", tarball], projectRoot)
   const forbidden = listing.split("\n").find((entry) =>
-    entry.includes("/.env")
+    (entry.includes("/.env") && entry !== "package/.env.example")
     || entry.includes("/.cyrion/")
     || entry.endsWith(".sqlite")
     || entry.startsWith("package/references/")
@@ -32,6 +32,7 @@ try {
   await stat(join(packageRoot, "agents/root/system.md"))
   await stat(join(packageRoot, "fixtures/manifest.json"))
   await stat(join(packageRoot, "workers/fixture-worker.ts"))
+  await stat(join(packageRoot, ".env.example"))
 
   const packageMetadata = await Bun.file(join(packageRoot, "package.json")).json() as { name?: string; version?: string }
   if (!packageMetadata.name || !packageMetadata.version) throw new Error("Packed package identity is missing")

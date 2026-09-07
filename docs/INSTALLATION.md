@@ -14,6 +14,35 @@ bun run check
 bun run demo
 ```
 
+## LLM provider readiness
+
+The fixture demo is intentionally runnable without an LLM. To prepare an
+OpenCode provider, create a local environment file and fill both Cyrion IDs:
+
+```bash
+cp .env.example .env
+opencode models <provider>
+```
+
+Set `CYRION_PROVIDER_ID`, `CYRION_MODEL_ID`, and the selected provider's API-key
+environment variable in `.env`. As an alternative to an API-key variable, run
+`opencode auth login`; OpenCode keeps that credential outside this repository.
+Never commit `.env`.
+
+Check discovery without making a model request:
+
+```bash
+bun run apps/cli/src/index.ts providers
+bun run apps/cli/src/index.ts providers --check
+```
+
+The first command explains missing configuration; `--check` also exits nonzero
+until the selected provider, model, and credential are available. The current
+assessment command still uses deterministic fixture planning and workers. A
+configured provider is displayed in the terminal as configuration only; live
+provider-backed assessment remains disabled until it has a scoped evidence and
+tool adapter.
+
 ## Build the distributable CLI
 
 ```bash

@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added a packaged environment template, provider/model validation,
+  OpenCode provider readiness diagnostics, and visible runtime configuration in
+  the terminal without enabling unscoped live assessment.
 - Added a repeatable release-artifact command that emits the npm tarball, a
   CycloneDX 1.6 production-dependency SBOM, and SHA-256 checksums after testing
   the installed package from a clean temporary consumer.

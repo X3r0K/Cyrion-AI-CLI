@@ -6,6 +6,7 @@ import { MemoryEvidenceStore } from "@cyrion/evidence"
 import { FixtureAgentRuntime, FixtureToolAdapter } from "@cyrion/runtime-opencode"
 import {
   formatEvidenceInspector,
+  formatEngagement,
   formatFindingDetail,
   formatMission,
   formatWorkerInspector,
@@ -21,6 +22,22 @@ import {
 const projectRoot = join(import.meta.dir, "..")
 
 describe("product terminal state", () => {
+  test("shows the configured runtime and provider without exposing credentials", async () => {
+    const snapshot = await completedSnapshot()
+    const output = plainText(formatEngagement(snapshot, {
+      mode: "fixture",
+      provider: "openai/gpt-test (CONFIGURED)",
+    }))
+    expect(output).toContain("FIXTURE")
+    expect(output).toContain("openai/gpt-test (CONFIGURED)")
+    expect(output).not.toContain("API_KEY")
+    const mission = plainText(formatMission(snapshot, {
+      mode: "fixture",
+      provider: "openai/gpt-test (CONFIGURED)",
+    }))
+    expect(mission).toContain("FIXTURE / LLM openai/gpt-test (CONFIGURED)")
+  })
+
   test("navigates workers, findings, and linked evidence without relying on color", async () => {
     const snapshot = await completedSnapshot()
     let state = createTerminalUiState(snapshot)

@@ -26,6 +26,7 @@ import {
   formatWorkerInspector,
   sanitizeTerminalText,
   type EvidenceVerification,
+  type RuntimeDisplay,
   type ViewName,
 } from "./format"
 import {
@@ -47,7 +48,11 @@ interface EvidencePreview {
   verification: EvidenceVerification
 }
 
-export async function runTui(controller: CyrionController, evidenceStore: EvidenceStore): Promise<void> {
+export async function runTui(
+  controller: CyrionController,
+  evidenceStore: EvidenceStore,
+  runtime: RuntimeDisplay = { mode: "fixture" },
+): Promise<void> {
   const renderer = await createCliRenderer({ exitOnCtrlC: true, backgroundColor: theme.background })
   renderer.setTerminalTitle("CYRION/AI Community")
 
@@ -62,7 +67,7 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
     content: t`${bold(fg(theme.accent)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
   })
   const headerMeta = new TextRenderable(renderer, {
-    content: `DEMO / LAB  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.scope.targets[0]}  |  ${controller.snapshot.manifest.mode.toUpperCase()}`,
+    content: `${runtime.mode.toUpperCase()} / LLM ${runtime.provider ?? "NOT CONFIGURED"}  |  ${controller.snapshot.manifest.id}  |  ${controller.snapshot.manifest.mode.toUpperCase()}`,
     fg: theme.muted,
   })
   header.add(brand)
@@ -166,7 +171,7 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
     if (ui.helpVisible) return formatCommandHelp()
     if (ui.activeView === "SWARM") return formatWorkerInspector(snapshot, ui.selectedTaskId)
     if (ui.activeView === "FINDINGS") return formatFindingDetail(snapshot, ui.selectedFindingId)
-    return formatEngagement(snapshot)
+    return formatEngagement(snapshot, runtime)
   }
 
   const render = (): void => {
@@ -185,8 +190,8 @@ export async function runTui(controller: CyrionController, evidenceStore: Eviden
     const detail = detailForCurrentView(snapshot)
 
     if (ui.activeView === "MISSION") {
-      centerText.content = formatMission(snapshot)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : formatEngagement(snapshot)
+      centerText.content = formatMission(snapshot, runtime)
+      rightText.content = ui.helpVisible ? formatCommandHelp() : formatEngagement(snapshot, runtime)
     } else if (ui.activeView === "SWARM") {
       centerText.content = isWide
         ? formatTaskBoard(snapshot, ui.selectedTaskId)
