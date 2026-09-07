@@ -12,7 +12,7 @@ finding, and evidence reference comes from the public engagement snapshot.
 | `2` | Swarm | Select every dispatched worker and inspect its assignment, capabilities, lease, events, and result. |
 | `3` | Findings | Select a finding, read its validation state, and press `Enter` or `e` to follow its first supporting artifact. |
 | `4` | Evidence | Select artifacts and inspect metadata, SHA-256 status, and a bounded local preview. |
-| `5` | Settings | Review and edit provider, model, default mode, demo scenario, and color profile. |
+| `5` | Settings | Review and edit provider, model, Root planner, default mode, demo scenario, and color profile. |
 
 Use arrow keys or `j`/`k` to move within a view. Use left/right or `[`/`]` to
 move between views. Press `?` or `Ctrl+K` for the in-product command reference.
@@ -28,6 +28,10 @@ owner-only `.env` file, preserves credential lines without rendering them, and
 applies saved defaults on the next launch. The active engagement is not
 mutated. Use `[`/`]` or a numbered shortcut to leave the view while left/right
 is reserved for editing.
+
+Selecting the `OPENCODE` Root planner enables guarded provider review on the
+next launch. The terminal labels this as `HYBRID`: OpenCode reviews an exact
+controller proposal while fixture workers retain all tool and evidence access.
 
 The dashboard owns the keyboard by default. Press `i` or `Tab` to focus Root
 chat, `Enter` to send, and `Escape` or `Tab` to return to navigation. Root chat

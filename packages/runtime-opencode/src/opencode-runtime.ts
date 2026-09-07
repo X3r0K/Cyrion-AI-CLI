@@ -13,8 +13,10 @@ import {
   type TaskSpec,
   type WorkerResult,
 } from "@cyrion/contracts"
+import type { RootDecisionReview, RootDecisionReviewer } from "./guarded-root-planner"
+import { sanitizeProviderDiagnostic } from "./provider-status"
 
-interface RuntimeOptions {
+export interface RuntimeOptions {
   agentsDir: string
   directory: string
   providerID?: string
@@ -30,6 +32,34 @@ interface PromptResult {
   structured: unknown
   usage: { inputTokens: number; outputTokens: number; costUsd: number }
 }
+
+interface StructuredPart {
+  type: string
+  text?: string
+  ignored?: boolean
+}
+
+// Some OpenCode providers reject tool_choice:none. TodoWrite only mutates the
+// ephemeral OpenCode session, so it is the sole compatibility tool advertised;
+// host, file, network, and delegation capabilities remain unavailable.
+const safePromptTools = {
+  bash: false,
+  edit: false,
+  write: false,
+  apply_patch: false,
+  read: false,
+  glob: false,
+  grep: false,
+  list: false,
+  lsp: false,
+  skill: false,
+  task: false,
+  webfetch: false,
+  websearch: false,
+  question: false,
+  todoread: false,
+  todowrite: true,
+} as const
 
 const identifierSchema = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", maxLength: 128 } as const
 const evidenceIdListSchema = {
@@ -97,6 +127,16 @@ const rootDecisionSchema = {
         },
       ],
     },
+  },
+} as const
+
+const rootDecisionReviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "rationale"],
+  properties: {
+    verdict: { enum: ["accept", "stop"] },
+    rationale: { type: "string", minLength: 1, maxLength: 4_096 },
   },
 } as const
 
@@ -175,7 +215,7 @@ const workerResultSchema = {
   },
 } as const
 
-export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
+export class OpenCodeRuntime implements AgentRuntime, RootPlanner, RootDecisionReviewer {
   readonly #options: RuntimeOptions
   readonly #sessions = new Map<string, string>()
   #handle?: Promise<OpenCodeHandle>
@@ -188,20 +228,7 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
 
   async decide(snapshot: EngagementSnapshot): Promise<RootDecision> {
     const systemPrompt = await readFile(join(this.#options.agentsDir, "root", "system.md"), "utf8")
-    const publicState = {
-      engagement: {
-        id: snapshot.manifest.id,
-        objective: snapshot.manifest.objective,
-        scope: snapshot.manifest.scope,
-        budgets: snapshot.manifest.budgets,
-      },
-      status: snapshot.status,
-      tasks: snapshot.tasks.map(({ id, role, objective, target, status, dependencies }) => ({
-        id, role, objective, target, status, dependencies,
-      })),
-      findings: snapshot.findings,
-      evidence: snapshot.evidence.map(({ id, kind, uri, sha256 }) => ({ id, kind, uri, sha256 })),
-    }
+    const publicState = plannerState(snapshot)
     const response = await this.#prompt(
       "root-agent",
       "Cyrion Root",
@@ -210,6 +237,27 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
       rootDecisionSchema,
     )
     assertRootDecision(response.structured)
+    this.#plannerUsage = response.usage
+    return response.structured
+  }
+
+  async review(snapshot: EngagementSnapshot, proposal: RootDecision): Promise<RootDecisionReview> {
+    const systemPrompt = await readFile(join(this.#options.agentsDir, "root", "system.md"), "utf8")
+    const publicState = plannerState(snapshot)
+    const response = await this.#prompt(
+      "root-agent",
+      "Cyrion Root",
+      systemPrompt,
+      [
+        "Review the exact controller-generated transition below.",
+        "Accept only when it is bounded by the supplied scope and budgets and is a valid next step.",
+        "You may explain or stop the transition, but you may not alter tasks, targets, capabilities, or dependencies.",
+        `Controller state:\n${JSON.stringify(publicState)}`,
+        `Proposed transition:\n${JSON.stringify(proposal)}`,
+      ].join("\n"),
+      rootDecisionReviewSchema,
+    )
+    assertRootDecisionReview(response.structured)
     this.#plannerUsage = response.usage
     return response.structured
   }
@@ -286,7 +334,7 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
         sessionID,
         directory: this.#options.directory,
         system,
-        tools: { bash: false, edit: false, write: false, task: false },
+        tools: safePromptTools,
         format: { type: "json_schema", schema, retryCount: 2 },
         parts: [{ type: "text", text }],
         ...(this.#modelRef() ? { model: this.#modelRef()! } : {}),
@@ -294,13 +342,46 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
       { throwOnError: true },
     )
     if (!response.data) throw new Error(`OpenCode session ${sessionID} returned no response`)
+    let structured = response.data.info.structured
+      ?? parseStrictStructuredText(response.data.parts)
+    let usage = promptUsage(response.data.info)
+    if (structured === undefined && supportsStrictTextFallback(response.data.info.error)) {
+      const fallback = await client.session.prompt(
+        {
+          sessionID,
+          directory: this.#options.directory,
+          system,
+          tools: safePromptTools,
+          format: { type: "text" },
+          parts: [{
+            type: "text",
+            text: [
+              "Return only one bare JSON object for the preceding request.",
+              "Do not use Markdown fences, commentary, or additional keys.",
+              `The JSON must conform exactly to this schema:\n${JSON.stringify(schema)}`,
+            ].join("\n"),
+          }],
+          ...(this.#modelRef() ? { model: this.#modelRef()! } : {}),
+        },
+        { throwOnError: true },
+      )
+      if (!fallback.data) throw new Error(`OpenCode session ${sessionID} returned no fallback response`)
+      usage = addUsage(usage, promptUsage(fallback.data.info))
+      structured = fallback.data.info.structured
+        ?? parseStrictStructuredText(fallback.data.parts)
+      if (structured === undefined && fallback.data.info.error) {
+        throw new Error(`OpenCode request failed: ${fallback.data.info.error.name}`)
+      }
+    }
+    if (structured === undefined) {
+      const failure = response.data.info.error
+        ? sanitizeProviderDiagnostic(providerErrorMessage(response.data.info.error), Bun.env)
+        : "provider returned no strict JSON object"
+      throw new Error(`OpenCode structured response unavailable: ${failure}`)
+    }
     return {
-      structured: response.data.info.structured,
-      usage: {
-        inputTokens: response.data.info.tokens.input,
-        outputTokens: response.data.info.tokens.output + response.data.info.tokens.reasoning,
-        costUsd: response.data.info.cost,
-      },
+      structured,
+      usage,
     }
   }
 
@@ -314,5 +395,75 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner {
     if (this.#closed) throw new Error("OpenCode runtime is closed")
     this.#handle ??= createOpencode({ timeout: 15_000 })
     return this.#handle
+  }
+}
+
+export function parseStrictStructuredText(parts: readonly StructuredPart[]): unknown | undefined {
+  const text = parts
+    .filter((part) => part.type === "text" && !part.ignored && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim()
+  if (!text.startsWith("{") || !text.endsWith("}")) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+function promptUsage(info: { tokens: { input: number; output: number; reasoning: number }; cost: number }): PromptResult["usage"] {
+  return {
+    inputTokens: info.tokens.input,
+    outputTokens: info.tokens.output + info.tokens.reasoning,
+    costUsd: info.cost,
+  }
+}
+
+function addUsage(left: PromptResult["usage"], right: PromptResult["usage"]): PromptResult["usage"] {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    costUsd: left.costUsd + right.costUsd,
+  }
+}
+
+function providerErrorMessage(error: { name: string; data?: unknown }): string {
+  if (error.data && typeof error.data === "object" && "message" in error.data && typeof error.data.message === "string") {
+    return `${error.name}: ${error.data.message}`
+  }
+  return error.name
+}
+
+function supportsStrictTextFallback(error: { name: string; data?: unknown } | undefined): boolean {
+  if (!error || error.name === "StructuredOutputError") return true
+  return error.name === "APIError" && providerErrorMessage(error).includes("tool_choice")
+}
+
+function plannerState(snapshot: EngagementSnapshot): object {
+  return {
+    engagement: {
+      id: snapshot.manifest.id,
+      objective: snapshot.manifest.objective,
+      scope: snapshot.manifest.scope,
+      budgets: snapshot.manifest.budgets,
+    },
+    status: snapshot.status,
+    tasks: snapshot.tasks.map(({ id, role, objective, target, status, dependencies }) => ({
+      id, role, objective, target, status, dependencies,
+    })),
+    findings: snapshot.findings,
+    evidence: snapshot.evidence.map(({ id, kind, uri, sha256 }) => ({ id, kind, uri, sha256 })),
+  }
+}
+
+function assertRootDecisionReview(value: unknown): asserts value is RootDecisionReview {
+  if (!value || typeof value !== "object") throw new Error("Invalid OpenCode Root review: response must be an object")
+  const review = value as Partial<RootDecisionReview>
+  if (review.verdict !== "accept" && review.verdict !== "stop") {
+    throw new Error("Invalid OpenCode Root review: verdict must be accept or stop")
+  }
+  if (typeof review.rationale !== "string" || !review.rationale.trim() || review.rationale.length > 4_096) {
+    throw new Error("Invalid OpenCode Root review: rationale must be a non-empty bounded string")
   }
 }

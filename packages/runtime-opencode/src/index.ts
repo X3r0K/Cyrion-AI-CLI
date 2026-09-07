@@ -1,4 +1,5 @@
 export * from "./fixture-runtime"
+export * from "./guarded-root-planner"
 export * from "./isolated-fixture-adapter"
 export * from "./opencode-runtime"
 export * from "./provider-status"

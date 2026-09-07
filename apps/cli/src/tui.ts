@@ -259,6 +259,7 @@ export async function runTui(
         settingsEditor = commitSettingsEditor(settingsEditor)
         process.env.CYRION_PROVIDER_ID = values.providerID
         process.env.CYRION_MODEL_ID = values.modelID
+        process.env.CYRION_DEFAULT_PLANNER = values.defaultPlanner
         process.env.CYRION_DEFAULT_MODE = values.defaultMode
         process.env.CYRION_DEFAULT_FIXTURE = values.defaultFixture
         process.env.CYRION_COLOR_MODE = values.colorMode

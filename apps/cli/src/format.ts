@@ -14,7 +14,7 @@ import { theme } from "./theme"
 export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE" | "SETTINGS"
 
 export interface RuntimeDisplay {
-  mode: "fixture" | "opencode"
+  mode: "fixture" | "hybrid"
   provider?: string
 }
 
@@ -533,6 +533,7 @@ function validationVerdict(value: Finding["status"]): TextChunk {
 function settingLabel(field: SettingsField): string {
   if (field === "provider") return "LLM provider"
   if (field === "model") return "LLM model"
+  if (field === "defaultPlanner") return "Root planner"
   if (field === "defaultMode") return "Default mode"
   if (field === "defaultFixture") return "Demo scenario"
   return "Color profile"
@@ -541,6 +542,7 @@ function settingLabel(field: SettingsField): string {
 function settingDescription(field: SettingsField): string {
   if (field === "provider") return "Connected OpenCode provider used by future LLM-backed runtime sessions."
   if (field === "model") return "Model selected from the active provider's discovered catalog."
+  if (field === "defaultPlanner") return "Fixture uses deterministic Root planning; OpenCode enables guarded provider review."
   if (field === "defaultMode") return "Default controller supervision policy when --mode is not supplied."
   if (field === "defaultFixture") return "Default deterministic demo scenario when --fixture is not supplied."
   return "Terminal color behavior. Auto follows NO_COLOR; explicit profiles override it."

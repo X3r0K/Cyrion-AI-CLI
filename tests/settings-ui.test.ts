@@ -30,6 +30,7 @@ describe("terminal settings editor", () => {
     let state = createSettingsEditor({
       providerID: "openai",
       modelID: "gpt-b",
+      defaultPlanner: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
@@ -44,10 +45,12 @@ describe("terminal settings editor", () => {
     let state = createSettingsEditor({
       providerID: "openai",
       modelID: "gpt-a",
+      defaultPlanner: "fixture",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
     })
+    state = moveSettingsSelection(state, 1)
     state = moveSettingsSelection(state, 1)
     state = moveSettingsSelection(state, 1)
     state = adjustSetting(state, providers, 1)

@@ -29,9 +29,9 @@ environment variable in `.env`. As an alternative to an API-key variable, run
 `opencode auth login`; OpenCode keeps that credential outside this repository.
 Never commit `.env`.
 
-The terminal Settings view can also persist the provider, model, default
-controller mode, demo scenario, and color profile. CLI `--mode` and `--fixture`
-flags override their saved defaults for a single launch.
+The terminal Settings view can also persist the provider, model, default Root
+planner, controller mode, demo scenario, and color profile. CLI `--planner`,
+`--mode`, and `--fixture` flags override their saved defaults for a single launch.
 
 Check discovery without making a model request:
 
@@ -49,11 +49,18 @@ bun run apps/cli/src/index.ts providers --select
 ```
 
 The first command explains missing configuration; `--check` also exits nonzero
-until the selected provider, model, and credential are available. The current
-assessment command still uses deterministic fixture planning and workers. A
-configured provider is displayed in the terminal as configuration only; live
-provider-backed assessment remains disabled until it has a scoped evidence and
-tool adapter.
+until the selected provider, model, and credential are available. To make real
+model requests for bounded Root review, run:
+
+```bash
+cyrion demo --planner opencode
+```
+
+OpenCode may accept or stop each exact controller-generated transition and may
+replace only its rationale. It cannot invent task IDs, targets, capabilities,
+or dependencies. Tool execution and evidence capture remain deterministic and
+isolated; provider-backed workers remain disabled until a scoped evidence and
+tool adapter exists. Model requests may incur provider charges.
 
 ## Build the distributable CLI
 

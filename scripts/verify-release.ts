@@ -58,7 +58,7 @@ try {
   const artifactsPath = join(sandbox, "artifacts")
   const demo = await run([
     "bun", executable, "demo", "--headless", "--fixture", "known-positive",
-    "--mode", "autonomous", "--state", statePath, "--artifacts", artifactsPath,
+    "--planner", "fixture", "--mode", "autonomous", "--state", statePath, "--artifacts", artifactsPath,
   ], consumer)
   const finalLine = demo.trim().split("\n").at(-1)
   const summary = JSON.parse(finalLine ?? "null") as { status?: string; confirmed?: number }
@@ -68,7 +68,7 @@ try {
 
   const supervised = await run([
     "bun", executable, "demo", "--headless", "--fixture", "clean",
-    "--mode", "supervised", "--approve-all",
+    "--planner", "fixture", "--mode", "supervised", "--approve-all",
     "--state", join(sandbox, "supervised.sqlite"),
     "--artifacts", join(sandbox, "supervised-artifacts"),
   ], consumer)
@@ -129,7 +129,7 @@ async function runTuiSmoke(executable: string, cwd: string): Promise<void> {
   if (process.platform !== "linux") return
 
   const child = Bun.spawn([
-    "script", "--quiet", "--return", "--command", `bun ${executable} demo --mode autonomous`, "/dev/null",
+    "script", "--quiet", "--return", "--command", `bun ${executable} demo --planner fixture --mode autonomous`, "/dev/null",
   ], {
     cwd,
     stdin: "pipe",

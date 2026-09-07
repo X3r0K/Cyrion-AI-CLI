@@ -165,6 +165,7 @@ describe("product terminal state", () => {
     const state = createSettingsEditor({
       providerID: "opencode",
       modelID: "zen-test",
+      defaultPlanner: "opencode",
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
@@ -184,6 +185,7 @@ describe("product terminal state", () => {
     const inspector = plainText(formatSettingsInspector(state, display))
     expect(settings).toContain("GENERAL SETTINGS")
     expect(settings).toContain("OpenCode Zen / opencode")
+    expect(settings).toContain("Root planner")
     expect(settings).toContain("KNOWN POSITIVE")
     expect(inspector).toContain("CONNECTED")
     expect(inspector).toContain("Credentials are managed by OpenCode")

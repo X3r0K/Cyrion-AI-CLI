@@ -23,11 +23,14 @@ bun install
 bun run demo
 ```
 
-The demo uses deterministic fixture workers and does not require an LLM. Copy
-`.env.example` to `.env`, configure an OpenCode provider/model, and run
+The demo defaults to deterministic fixture planning and workers and does not
+require an LLM. Copy `.env.example` to `.env`, configure an OpenCode
+provider/model, and run
 `bun run apps/cli/src/index.ts providers` to inspect readiness without sending a
 model request. See [Installation](docs/INSTALLATION.md) for the exact variables
-and the current provider-execution boundary.
+and provider-execution boundary. After provider readiness passes, use
+`cyrion demo --planner opencode` for guarded provider review of each exact Root
+transition; isolated fixture workers continue to own tools and evidence.
 
 Use `bun run apps/cli/src/index.ts providers --select` to choose interactively
 from the providers and models OpenCode reports as connected.
@@ -35,10 +38,10 @@ from the providers and models OpenCode reports as connected.
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
 supports `1`–`5` to switch views, arrows or `j`/`k` to select rows, `Enter` to
 inspect, `i` to focus Root chat, `p` to pause/resume dispatch, and `q` to quit.
-The fifth view edits general settings: use left/right to change a value, `s` to
-save, `r` to revert, and `d` to refresh OpenCode discovery. If work is still
-active, `q` cancels the leased workers before returning control to the shell.
-Press `?` for the full keyboard reference.
+The fifth view edits provider, Root planner, and general settings: use
+left/right to change a value, `s` to save, `r` to revert, and `d` to refresh
+OpenCode discovery. If work is still active, `q` cancels the leased workers
+before returning control to the shell. Press `?` for the full keyboard reference.
 
 Exercise the durable supervisor gate with `bun run demo -- --mode supervised`.
 Every Root delegation must be approved with `a` or denied with `x` before tasks

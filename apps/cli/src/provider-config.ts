@@ -3,13 +3,15 @@ import { chmod, lstat, readFile, rename, rm, writeFile } from "node:fs/promises"
 import type { ProviderSelection } from "@cyrion/runtime-opencode"
 
 const managedKeys = ["CYRION_PROVIDER_ID", "CYRION_MODEL_ID"] as const
-const generalKeys = ["CYRION_DEFAULT_MODE", "CYRION_DEFAULT_FIXTURE", "CYRION_COLOR_MODE"] as const
+const generalKeys = ["CYRION_DEFAULT_PLANNER", "CYRION_DEFAULT_MODE", "CYRION_DEFAULT_FIXTURE", "CYRION_COLOR_MODE"] as const
 
+export type DefaultPlanner = "fixture" | "opencode"
 export type DefaultMode = "autonomous" | "supervised"
 export type DefaultFixture = "known-positive" | "clean" | "rejected" | "incomplete"
 export type ColorMode = "auto" | "color" | "monochrome"
 
 export interface GeneralSettings {
+  defaultPlanner: DefaultPlanner
   defaultMode: DefaultMode
   defaultFixture: DefaultFixture
   colorMode: ColorMode
@@ -21,6 +23,7 @@ export interface TerminalSettings extends GeneralSettings {
 }
 
 export const defaultGeneralSettings: GeneralSettings = {
+  defaultPlanner: "fixture",
   defaultMode: "autonomous",
   defaultFixture: "known-positive",
   colorMode: "auto",
@@ -30,6 +33,7 @@ type Environment = Readonly<Record<string, string | undefined>>
 
 export function readGeneralSettings(environment: Environment): GeneralSettings {
   return {
+    defaultPlanner: readChoice(environment.CYRION_DEFAULT_PLANNER, ["fixture", "opencode"], "CYRION_DEFAULT_PLANNER", "fixture"),
     defaultMode: readChoice(environment.CYRION_DEFAULT_MODE, ["autonomous", "supervised"], "CYRION_DEFAULT_MODE", "autonomous"),
     defaultFixture: readChoice(
       environment.CYRION_DEFAULT_FIXTURE,
@@ -52,6 +56,7 @@ export function updateGeneralEnvironment(source: string, settings: TerminalSetti
   return updateEnvironment(source, [...managedKeys, ...generalKeys], {
     CYRION_PROVIDER_ID: settings.providerID,
     CYRION_MODEL_ID: settings.modelID,
+    CYRION_DEFAULT_PLANNER: settings.defaultPlanner,
     CYRION_DEFAULT_MODE: settings.defaultMode,
     CYRION_DEFAULT_FIXTURE: settings.defaultFixture,
     CYRION_COLOR_MODE: settings.colorMode,
@@ -87,6 +92,9 @@ export async function saveProviderSelection(path: string, selection: ProviderSel
 export async function saveGeneralSettings(path: string, settings: TerminalSettings): Promise<void> {
   if (Boolean(settings.providerID) !== Boolean(settings.modelID)) {
     throw new Error("Choose both an LLM provider and model, or leave both unconfigured")
+  }
+  if (settings.defaultPlanner === "opencode" && !settings.providerID) {
+    throw new Error("OpenCode planning requires an LLM provider and model")
   }
   await saveEnvironment(path, (source) => updateGeneralEnvironment(source, settings))
 }

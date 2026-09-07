@@ -2,13 +2,15 @@
 import { existsSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
-import { assertManifest, type EngagementManifest, type EngagementSnapshot } from "@cyrion/contracts"
+import { assertManifest, type EngagementManifest, type EngagementSnapshot, type RootPlanner } from "@cyrion/contracts"
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
 import { renderJsonReport, renderMarkdownReport } from "@cyrion/reporting"
 import {
   FixtureAgentRuntime,
+  GuardedRootPlanner,
   IsolatedFixtureToolAdapter,
+  OpenCodeRuntime,
   inspectOpenCodeProviders,
   readProviderSelection,
   type FixtureScenario,
@@ -70,6 +72,10 @@ async function runDemo(): Promise<void> {
     throw new Error("--mode must be autonomous or supervised")
   }
   manifest.mode = mode === "supervised" ? "supervised" : "autonomous"
+  const plannerMode = readFlag("--planner") ?? settings.defaultPlanner
+  if (plannerMode !== "fixture" && plannerMode !== "opencode") {
+    throw new Error("--planner must be fixture or opencode")
+  }
   const autoApprove = args.includes("--approve-all")
   if (headless && manifest.mode === "supervised" && !autoApprove) {
     throw new Error("Headless supervised mode requires --approve-all; interactive approval needs a TTY")
@@ -88,10 +94,29 @@ async function runDemo(): Promise<void> {
     "fixture.read": fixtureAdapter,
     "fixture.compare": fixtureAdapter,
   })
+  let planner: RootPlanner = new FixtureRootPlanner()
+  if (plannerMode === "opencode") {
+    if (!provider) {
+      throw new Error("OpenCode planning requires a provider and model. Configure them in Settings or run `cyrion providers --select`.")
+    }
+    const readiness = await inspectOpenCodeProviders(process.cwd(), provider)
+    if (!readiness.ready) {
+      const detail = readiness.error
+        ?? "the selected provider, model, or credential is unavailable"
+      throw new Error(`OpenCode planning is not ready: ${detail}. Run \`cyrion providers --check\`.`)
+    }
+    const reviewer = new OpenCodeRuntime({
+      agentsDir: join(projectRoot, "agents"),
+      directory: process.cwd(),
+      providerID: provider.providerID,
+      modelID: provider.modelID,
+    })
+    planner = new GuardedRootPlanner(new FixtureRootPlanner(), reviewer)
+  }
   const controller = new CyrionController(
     manifest as EngagementManifest,
     new FixtureAgentRuntime({ scenario: scenario as FixtureScenario }),
-    new FixtureRootPlanner(),
+    planner,
     join(projectRoot, "agents"),
     { ...(store ? { store } : {}), toolGateway, autoApprove, evidenceStore },
   )
@@ -106,8 +131,8 @@ async function runDemo(): Promise<void> {
   }
 
   await runTui(controller, evidenceStore, {
-    mode: "fixture",
-    ...(provider ? { provider: `${provider.providerID}/${provider.modelID} (CONFIGURED)` } : {}),
+    mode: plannerMode === "opencode" ? "hybrid" : "fixture",
+    ...(provider ? { provider: `${provider.providerID}/${provider.modelID} (${plannerMode === "opencode" ? "ACTIVE" : "CONFIGURED"})` } : {}),
   })
   controller.close()
 }
@@ -310,7 +335,8 @@ function usage(): string {
     `CYRION/AI Community ${CLI_VERSION}`,
     "",
     "Usage:",
-    "  cyrion demo [--headless] [--fixture <scenario>] [--mode autonomous|supervised] [--approve-all]",
+    "  cyrion demo [--headless] [--fixture <scenario>] [--planner fixture|opencode]",
+    "              [--mode autonomous|supervised] [--approve-all]",
     "              [--state <sqlite-path>] [--artifacts <directory>]",
     "  cyrion providers [--json] [--check] [--select]",
     "  cyrion status <engagement-id> --state <sqlite-path> [--json]",
@@ -318,6 +344,7 @@ function usage(): string {
     "  cyrion version",
     "",
     "Fixture scenarios: known-positive, clean, rejected, incomplete",
+    "OpenCode planning reviews bounded fixture transitions and may make billable model requests.",
     "Headless supervised runs require --approve-all.",
   ].join("\n")
 }

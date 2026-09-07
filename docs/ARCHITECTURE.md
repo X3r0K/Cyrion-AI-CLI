@@ -52,6 +52,18 @@ OpenCode supplies independent sessions, provider access, streaming, and
 cancellation. Cyrion owns the task graph, leases, validation gates, and durable
 event model. This avoids two schedulers competing for worker lifecycle.
 
+The community CLI exposes OpenCode first as a guarded Root reviewer. A
+deterministic policy planner proposes the next exact transition; the provider
+may accept it with a public rationale or stop it, but cannot rewrite tasks,
+targets, capabilities, or dependencies. Isolated fixture workers still own all
+tool calls and evidence capture. This hybrid boundary exercises real provider
+sessions without treating model output as authority or evidence.
+
+Provider prompts advertise no host, file, network, or delegation tools. For
+providers that reject `tool_choice: none`, the only advertised compatibility
+tool is OpenCode's ephemeral session todo list; it cannot access the assessment
+target, repository, host shell, or evidence store.
+
 ## Controller state
 
 The controller can use either an in-memory store for disposable demos or a

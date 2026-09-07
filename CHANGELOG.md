@@ -4,6 +4,9 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added guarded OpenCode Root planning with CLI and Settings selection. The
+  provider can review or stop exact controller-generated transitions but cannot
+  alter their task identities, targets, capabilities, or dependencies.
 - Fixed Root-chat keyboard routing so focused text entry always receives letter
   keys; removed the conflicting `h`/`l` navigation aliases in favor of `[`/`]`.
 - Added a fifth terminal Settings view for safe provider/model selection and
