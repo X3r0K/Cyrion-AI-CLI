@@ -18,13 +18,23 @@ import {
   activateView,
   createTerminalUiState,
   inspectSelection,
+  isTextInputActive,
   moveSelection,
+  viewNavigationDelta,
 } from "../apps/cli/src/navigation"
 import { createSettingsEditor } from "../apps/cli/src/settings-ui"
 
 const projectRoot = join(import.meta.dir, "..")
 
 describe("product terminal state", () => {
+  test("never treats letter l as navigation and prioritizes focused text entry", () => {
+    expect(viewNavigationDelta("l", false)).toBeUndefined()
+    expect(viewNavigationDelta("l", true)).toBeUndefined()
+    expect(viewNavigationDelta("]", true)).toBe(1)
+    expect(isTextInputActive("dashboard", true)).toBe(true)
+    expect(isTextInputActive("chat", false)).toBe(true)
+  })
+
   test("shows the configured runtime and provider without exposing credentials", async () => {
     const snapshot = await completedSnapshot()
     const output = plainText(formatEngagement(snapshot, {

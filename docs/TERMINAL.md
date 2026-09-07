@@ -14,7 +14,7 @@ finding, and evidence reference comes from the public engagement snapshot.
 | `4` | Evidence | Select artifacts and inspect metadata, SHA-256 status, and a bounded local preview. |
 | `5` | Settings | Review and edit provider, model, default mode, demo scenario, and color profile. |
 
-Use arrow keys or `j`/`k` to move within a view. Use left/right or `h`/`l` to
+Use arrow keys or `j`/`k` to move within a view. Use left/right or `[`/`]` to
 move between views. Press `?` or `Ctrl+K` for the in-product command reference.
 
 Run `cyrion providers --select` before opening the dashboard to choose a model
@@ -26,7 +26,7 @@ its available values. Press `s` to save, `r` to discard draft changes, and `d`
 to refresh OpenCode discovery. The page writes only Cyrion-managed keys to the
 owner-only `.env` file, preserves credential lines without rendering them, and
 applies saved defaults on the next launch. The active engagement is not
-mutated. Use `h`/`l` or a numbered shortcut to leave the view while left/right
+mutated. Use `[`/`]` or a numbered shortcut to leave the view while left/right
 is reserved for editing.
 
 The dashboard owns the keyboard by default. Press `i` or `Tab` to focus Root

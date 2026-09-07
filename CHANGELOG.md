@@ -4,6 +4,8 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Fixed Root-chat keyboard routing so focused text entry always receives letter
+  keys; removed the conflicting `h`/`l` navigation aliases in favor of `[`/`]`.
 - Added a fifth terminal Settings view for safe provider/model selection and
   persisted mode, fixture, and color defaults without rendering or rewriting
   provider credentials.

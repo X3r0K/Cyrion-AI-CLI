@@ -275,7 +275,7 @@ export function formatCommandHelp(): StyledText {
   appendLine(chunks, [accent("1–5       "), plain("Mission / Swarm / Findings / Evidence / Settings")])
   appendLine(chunks, [accent("↑ ↓ / j k "), plain("Move current selection")])
   appendLine(chunks, [accent("← →       "), plain("Move views; adjust values in Settings")])
-  appendLine(chunks, [accent("h / l     "), plain("Move between views from any page")])
+  appendLine(chunks, [accent("[ / ]     "), plain("Move between views from any page")])
   appendLine(chunks, [accent("Enter / e "), plain("Open supporting evidence")])
   appendLine(chunks, [accent("Tab / i   "), plain("Focus or leave Root chat")])
   appendLine(chunks, [accent("p         "), plain("Pause or resume dispatch")])

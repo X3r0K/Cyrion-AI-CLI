@@ -3,6 +3,7 @@ import {
   CliRenderEvents,
   InputRenderable,
   InputRenderableEvents,
+  RenderableEvents,
   StyledText,
   TextRenderable,
   bold,
@@ -39,10 +40,12 @@ import {
   activateView,
   createTerminalUiState,
   inspectSelection,
+  isTextInputActive,
   moveSelection,
   reconcileTerminalUiState,
   selectedEvidence,
   type TerminalUiState,
+  viewNavigationDelta,
 } from "./navigation"
 import {
   readGeneralSettings,
@@ -368,9 +371,19 @@ export async function runTui(
     input.value = ""
     setChatMode(false)
   })
+  input.on(RenderableEvents.FOCUSED, () => {
+    if (ui.inputMode === "chat") return
+    ui = { ...ui, inputMode: "chat", helpVisible: false }
+    render()
+  })
+  input.on(RenderableEvents.BLURRED, () => {
+    if (ui.inputMode === "dashboard") return
+    ui = { ...ui, inputMode: "dashboard" }
+    render()
+  })
 
   const onKeyPress = (key: KeyEvent): void => {
-    if (ui.inputMode === "chat") {
+    if (isTextInputActive(ui.inputMode, input.focused)) {
       if (key.name === "escape" || key.name === "tab") {
         key.preventDefault()
         key.stopPropagation()
@@ -438,10 +451,10 @@ export async function runTui(
       discoverProviders(true)
       return
     }
-    if (["left", "h", "right", "l"].includes(key.name)) {
-      const delta = key.name === "left" || key.name === "h" ? -1 : 1
+    const viewDelta = viewNavigationDelta(key.name, ui.activeView === "SETTINGS")
+    if (viewDelta) {
       const current = views.indexOf(ui.activeView)
-      const next = (current + delta + views.length) % views.length
+      const next = (current + viewDelta + views.length) % views.length
       ui = activateView(ui, views[next] ?? "MISSION", controller.snapshot)
       key.preventDefault()
       key.stopPropagation()

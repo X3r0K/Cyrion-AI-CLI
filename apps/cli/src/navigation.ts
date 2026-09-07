@@ -3,6 +3,18 @@ import type { ViewName } from "./format"
 
 export type InputMode = "dashboard" | "chat"
 
+export function isTextInputActive(mode: InputMode, inputFocused: boolean): boolean {
+  return mode === "chat" || inputFocused
+}
+
+export function viewNavigationDelta(key: string, settingsActive: boolean): -1 | 1 | undefined {
+  if (key === "[") return -1
+  if (key === "]") return 1
+  if (!settingsActive && key === "left") return -1
+  if (!settingsActive && key === "right") return 1
+  return undefined
+}
+
 export interface TerminalUiState {
   activeView: ViewName
   inputMode: InputMode
