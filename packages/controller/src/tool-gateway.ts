@@ -1,3 +1,4 @@
+import { evaluateScope } from "@cyrion/scope"
 import type {
   EngagementManifest,
   TaskSpec,
@@ -105,8 +106,9 @@ export class ScopedToolGateway {
   #validate(binding: Binding, invocation: ToolInvocation): string | undefined {
     if (binding.engagementId !== this.#manifest.id) return "Tool engagement does not match manifest"
     if (invocation.target !== binding.task.target) return `Tool target does not match assigned task: ${invocation.target}`
-    if (!this.#manifest.scope.targets.includes(invocation.target) || this.#manifest.scope.excluded.includes(invocation.target)) {
-      return `Tool target is outside the approved scope: ${invocation.target}`
+    const decision = evaluateScope(this.#manifest.scope, invocation.target)
+    if (!decision.allowed) {
+      return `Tool target is outside the approved scope: ${invocation.target} (${decision.reason})`
     }
     if (!binding.task.capabilities.includes(invocation.capability)) {
       return `Tool capability is not assigned to this task: ${invocation.capability}`

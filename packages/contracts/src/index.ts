@@ -44,11 +44,13 @@ export interface TaskSpec {
   depth: number
   expectedOutput: "inventory" | "assessment" | "validation" | "report"
   findingId?: string
+  /** Methodology this task follows, so a report can state how a finding was produced. */
+  skillId?: string
 }
 
 export interface EvidenceRef {
   id: string
-  kind: "fixture" | "request" | "response" | "log" | "report"
+  kind: "fixture" | "request" | "response" | "log" | "report" | "poc"
   uri: string
   sha256: string
   capturedAt: string
@@ -92,6 +94,121 @@ export interface Finding {
   discoveredBy: string
   validatedBy?: string
   evidenceIds: string[]
+  /** Methodology that produced this finding, carried into the report. */
+  skillId?: string
+  /**
+   * Whether an independent replay reproduced the claim, recorded separately
+   * from severity: a serious finding nobody could reproduce is still a finding
+   * nobody could reproduce.
+   */
+  reproduction?: FindingReproduction
+}
+
+export interface FindingReproduction {
+  verdict: PocVerdict
+  /** Evidence ID of the PoC bundle this verdict came from. */
+  bundleId: string
+  steps: number
+  runner: "local" | "container"
+  at: string
+}
+
+
+// ---------------------------------------------------------------------------
+// Proof-of-concept reproduction. A PoC is a bounded, declarative plan the
+// controller can execute, replay, and hand to an operator — never a script a
+// model wrote. Destructive primitives are absent from the vocabulary rather
+// than discouraged in a prompt: there is no request body, no method beyond a
+// read, and no header that carries a credential.
+// ---------------------------------------------------------------------------
+
+export const POC_VERSION = "cyrion.community/poc-v1" as const
+
+export type PocMethod = "GET" | "HEAD" | "OPTIONS"
+export type PocVerdict = "reproduced" | "not-reproduced" | "inconclusive"
+
+/** Headers that would smuggle a secret into an artifact an operator will share. */
+export const POC_FORBIDDEN_HEADERS = [
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "x-auth-token",
+  "api-key",
+] as const
+
+export interface PocExpectation {
+  /** The response status must be one of these. */
+  status?: number[]
+  /** Every named header must be present. */
+  headersPresent?: string[]
+  /** Every named header must be absent. */
+  headersAbsent?: string[]
+  /** Case-insensitive substring the content type must contain. */
+  contentType?: string
+  /** Proof marker the body must contain, matched literally. */
+  bodyIncludes?: string
+  /** Text the body must not contain. */
+  bodyExcludes?: string
+}
+
+export interface PocStep {
+  id: string
+  description: string
+  method: PocMethod
+  url: string
+  headers?: Record<string, string>
+  expect: PocExpectation
+}
+
+export interface PocPlan {
+  version: typeof POC_VERSION
+  findingId: string
+  title: string
+  /** Why these steps prove the claim, in the operator's language. */
+  rationale: string
+  steps: PocStep[]
+}
+
+export interface PocStepRecord {
+  id: string
+  description: string
+  /** Exactly what ran, so the bundle reproduces without Cyrion. */
+  argv: string[]
+  request: { method: PocMethod; url: string; headers: Record<string, string> }
+  response?: {
+    status: number
+    headerNames: string[]
+    contentType?: string
+    bodyBytes: number
+    bodySha256: string
+    truncated: boolean
+  }
+  /** Artifact holding the raw exchange. */
+  evidenceId?: string
+  exitCode: number
+  durationMs: number
+  met: boolean
+  detail: string
+}
+
+export interface PocBundle {
+  version: typeof POC_VERSION
+  engagementId: string
+  findingId: string
+  createdAt: string
+  runner: "local" | "container"
+  tool: { binary: string; version?: string }
+  /** Environment the steps ran with. Never the operator's own. */
+  environment: Record<string, string>
+  /** Addresses each hostname was held to for the whole run. */
+  pins: Array<{ hostname: string; addresses: string[] }>
+  plan: PocPlan
+  steps: PocStepRecord[]
+  verdict: PocVerdict
+  /** A standalone shell script that repeats the run on a clean machine. */
+  script: string
 }
 
 export interface WorkerResult {
@@ -218,6 +335,16 @@ export interface RuntimeContext {
   remainingBudget: EngagementBudgets
   tools: ToolGateway
   evidenceStore: EvidenceStore
+  /**
+   * The candidate a validator must reproduce: the record, never the
+   * discovering worker's transcript.
+   */
+  candidate?: Finding
+  /**
+   * Artifacts the candidate cites. A validator may read what the target
+   * actually returned; it still never sees how the discoverer reasoned.
+   */
+  candidateEvidence?: EvidenceRef[]
 }
 
 export interface ToolInvocation {
@@ -250,6 +377,35 @@ export interface ToolAdapter {
 
 export interface AgentRuntime {
   runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult>
+  cancel(agentId: string): Promise<void>
+  close(): Promise<void>
+}
+
+export interface RootDecisionReview {
+  verdict: "accept" | "stop"
+  rationale: string
+}
+
+/** Reviews one controller-generated transition. It may explain or stop, never rewrite. */
+export interface RootDecisionReviewer {
+  review(snapshot: EngagementSnapshot, proposal: RootDecision): Promise<RootDecisionReview>
+  takeUsage?(): ResourceUsage | undefined
+  close(): Promise<void>
+}
+
+export interface WorkerResultReview {
+  verdict: "accept" | "flag"
+  summary: string
+}
+
+export interface WorkerReviewOutcome {
+  review: WorkerResultReview
+  usage: ResourceUsage
+}
+
+/** Reviews one canonical worker result. Findings and evidence stay controller inputs. */
+export interface WorkerResultReviewer {
+  reviewTask(task: TaskSpec, context: RuntimeContext, result: WorkerResult): Promise<WorkerReviewOutcome>
   cancel(agentId: string): Promise<void>
   close(): Promise<void>
 }
@@ -394,6 +550,155 @@ export function assertWorkerResult(value: unknown): asserts value is WorkerResul
   if (error) throw new Error(`Invalid WorkerResult: ${error}`)
 }
 
+
+// ---------------------------------------------------------------------------
+// PoC validation. The plan is the boundary: anything the runner will execute
+// has to survive these checks first, so a widened plan is refused before a
+// single request leaves the machine.
+// ---------------------------------------------------------------------------
+
+export const POC_MAX_STEPS = 8
+const POC_HEADER_NAME = /^[A-Za-z][A-Za-z0-9-]{0,63}$/
+
+export function pocPlanContractError(value: unknown): string | undefined {
+  if (!isRecord(value)) return "plan must be an object"
+  const extra = unexpectedKey(value, ["version", "findingId", "title", "rationale", "steps"])
+  if (extra) return `plan contains unexpected field ${extra}`
+  if (value.version !== POC_VERSION) return "unsupported PoC contract version"
+  if (!validIdentifier(value.findingId)) return "plan.findingId must be a safe identifier"
+  if (!validText(value.title, 512)) return "plan.title must be a non-empty bounded string"
+  if (!validText(value.rationale, 4_096)) return "plan.rationale must be a non-empty bounded string"
+  if (!Array.isArray(value.steps) || !value.steps.length || value.steps.length > POC_MAX_STEPS) {
+    return `plan.steps must hold 1 to ${POC_MAX_STEPS} steps`
+  }
+  const ids = new Set<string>()
+  for (let index = 0; index < value.steps.length; index += 1) {
+    const error = pocStepContractError(value.steps[index], `plan.steps[${index}]`)
+    if (error) return error
+    const id = (value.steps[index] as PocStep).id
+    if (ids.has(id)) return `plan.steps contains a duplicate step id: ${id}`
+    ids.add(id)
+  }
+  return undefined
+}
+
+export function assertPocPlan(value: unknown): asserts value is PocPlan {
+  const error = pocPlanContractError(value)
+  if (error) throw new Error(`Invalid PoC plan: ${error}`)
+}
+
+function pocStepContractError(value: unknown, path: string): string | undefined {
+  if (!isRecord(value)) return `${path} must be an object`
+  const extra = unexpectedKey(value, ["id", "description", "method", "url", "headers", "expect"])
+  if (extra) return `${path} contains unexpected field ${extra}`
+  if (!validIdentifier(value.id)) return `${path}.id must be a safe identifier`
+  if (!validText(value.description, 512)) return `${path}.description must be a non-empty bounded string`
+  // Reads only. A method that changes state is absent from the vocabulary, so
+  // no plan can ask for one and no runner has to refuse it.
+  if (!["GET", "HEAD", "OPTIONS"].includes(String(value.method))) {
+    return `${path}.method must be GET, HEAD, or OPTIONS`
+  }
+  const urlError = pocUrlError(value.url, `${path}.url`)
+  if (urlError) return urlError
+  if ("headers" in value) {
+    const headersError = pocHeadersError(value.headers, `${path}.headers`)
+    if (headersError) return headersError
+  }
+  return pocExpectationError(value.expect, `${path}.expect`)
+}
+
+function pocUrlError(value: unknown, path: string): string | undefined {
+  if (typeof value !== "string" || !value.length || value.length > 2_048) return `${path} must be a bounded URL`
+  if (/[\u0000-\u001F\u007F-\u009F\s]/.test(value)) return `${path} contains control characters`
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return `${path} is not a valid URL`
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return `${path} must be http or https`
+  if (url.username || url.password) return `${path} must not carry credentials`
+  // A scope expression may end in a wildcard; a step that will actually be
+  // requested may not — a proof has to name the URL it proves.
+  if (value.endsWith("*")) return `${path} must be a concrete URL, not a scope pattern`
+  return undefined
+}
+
+function pocHeadersError(value: unknown, path: string): string | undefined {
+  if (!isRecord(value)) return `${path} must be an object`
+  const entries = Object.entries(value)
+  if (entries.length > 8) return `${path} may hold at most 8 headers`
+  for (const [name, headerValue] of entries) {
+    if (!POC_HEADER_NAME.test(name)) return `${path} contains an invalid header name: ${name}`
+    if ((POC_FORBIDDEN_HEADERS as readonly string[]).includes(name.toLowerCase())) {
+      return `${path} may not carry the credential header ${name.toLowerCase()}; `
+        + "authenticated reproduction needs an operator-managed credential store"
+    }
+    if (typeof headerValue !== "string" || !headerValue.length || headerValue.length > 1_024) {
+      return `${path}.${name} must be a bounded string`
+    }
+    if (/[\u0000-\u001F\u007F-\u009F]/.test(headerValue)) return `${path}.${name} contains control characters`
+  }
+  return undefined
+}
+
+function pocExpectationError(value: unknown, path: string): string | undefined {
+  if (!isRecord(value)) return `${path} must be an object`
+  const allowed = ["status", "headersPresent", "headersAbsent", "contentType", "bodyIncludes", "bodyExcludes"]
+  const extra = unexpectedKey(value, allowed)
+  if (extra) return `${path} contains unexpected field ${extra}`
+  if (!allowed.some((key) => key in value)) return `${path} must state at least one condition`
+  if ("status" in value) {
+    if (!Array.isArray(value.status) || !value.status.length || value.status.length > 8) {
+      return `${path}.status must name 1 to 8 statuses`
+    }
+    if (value.status.some((code) => !Number.isSafeInteger(code) || Number(code) < 100 || Number(code) > 599)) {
+      return `${path}.status contains an invalid status code`
+    }
+  }
+  for (const field of ["headersPresent", "headersAbsent"] as const) {
+    if (!(field in value)) continue
+    const names = value[field]
+    if (!Array.isArray(names) || !names.length || names.length > 16) return `${path}.${field} must name 1 to 16 headers`
+    if (names.some((name) => typeof name !== "string" || !POC_HEADER_NAME.test(name))) {
+      return `${path}.${field} contains an invalid header name`
+    }
+  }
+  for (const field of ["contentType", "bodyIncludes", "bodyExcludes"] as const) {
+    if (!(field in value)) continue
+    if (!validText(value[field], 256)) return `${path}.${field} must be a non-empty string of at most 256 characters`
+  }
+  return undefined
+}
+
+export function pocBundleContractError(value: unknown): string | undefined {
+  if (!isRecord(value)) return "bundle must be an object"
+  const extra = unexpectedKey(value, [
+    "version", "engagementId", "findingId", "createdAt", "runner", "tool", "environment",
+    "pins", "plan", "steps", "verdict", "script",
+  ])
+  if (extra) return `bundle contains unexpected field ${extra}`
+  if (value.version !== POC_VERSION) return "unsupported PoC contract version"
+  if (!validIdentifier(value.engagementId)) return "bundle.engagementId is invalid"
+  if (!validIdentifier(value.findingId)) return "bundle.findingId is invalid"
+  if (typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))) {
+    return "bundle.createdAt is invalid"
+  }
+  if (value.runner !== "local" && value.runner !== "container") return "bundle.runner is invalid"
+  if (!isRecord(value.tool) || !validTokenText(value.tool.binary, 128)) return "bundle.tool is invalid"
+  if (!isRecord(value.environment)) return "bundle.environment must be an object"
+  if (!Array.isArray(value.pins) || value.pins.length > 64) return "bundle.pins is invalid"
+  if (!["reproduced", "not-reproduced", "inconclusive"].includes(String(value.verdict))) return "bundle.verdict is invalid"
+  if (!validText(value.script, 65_536)) return "bundle.script must be a bounded string"
+  if (!Array.isArray(value.steps) || !value.steps.length || value.steps.length > POC_MAX_STEPS) {
+    return "bundle.steps is invalid"
+  }
+  const planError = pocPlanContractError(value.plan)
+  if (planError) return `bundle plan is invalid: ${planError}`
+  if ((value.plan as PocPlan).findingId !== value.findingId) return "bundle plan names a different finding"
+  return undefined
+}
+
 export function resourceUsageContractError(value: unknown): string | undefined {
   if (!isRecord(value)) return "usage must be an object"
   const usageExtra = unexpectedKey(value, ["inputTokens", "outputTokens", "costUsd"])
@@ -409,7 +714,7 @@ function taskSpecContractError(value: unknown, path: string): string | undefined
   if (!isRecord(value)) return `${path} must be an object`
   const extra = unexpectedKey(value, [
     "id", "key", "parentTaskId", "role", "objective", "target", "capabilities", "dependencies", "depth",
-    "expectedOutput", "findingId",
+    "expectedOutput", "findingId", "skillId",
   ])
   if (extra) return `${path} contains unexpected field ${extra}`
   if (!validIdentifier(value.id)) return `${path}.id must be a safe identifier`
@@ -427,6 +732,7 @@ function taskSpecContractError(value: unknown, path: string): string | undefined
     return `${path}.expectedOutput is unsupported`
   }
   if ("findingId" in value && !validIdentifier(value.findingId)) return `${path}.findingId is invalid`
+  if ("skillId" in value && !validIdentifier(value.skillId)) return `${path}.skillId is invalid`
   return undefined
 }
 
@@ -444,7 +750,8 @@ function observationContractError(value: unknown, path: string): string | undefi
 function findingContractError(value: unknown, path: string): string | undefined {
   if (!isRecord(value)) return `${path} must be an object`
   const extra = unexpectedKey(value, [
-    "id", "title", "asset", "severity", "status", "summary", "discoveredBy", "validatedBy", "evidenceIds",
+    "id", "title", "asset", "severity", "status", "summary", "discoveredBy", "validatedBy", "evidenceIds", "skillId",
+    "reproduction",
   ])
   if (extra) return `${path} contains unexpected field ${extra}`
   if (!validIdentifier(value.id)) return `${path}.id is invalid`
@@ -457,7 +764,24 @@ function findingContractError(value: unknown, path: string): string | undefined 
   }
   if (!validIdentifier(value.discoveredBy)) return `${path}.discoveredBy is invalid`
   if ("validatedBy" in value && !validIdentifier(value.validatedBy)) return `${path}.validatedBy is invalid`
+  if ("skillId" in value && !validIdentifier(value.skillId)) return `${path}.skillId is invalid`
+  if ("reproduction" in value) {
+    const reproductionError = findingReproductionContractError(value.reproduction, `${path}.reproduction`)
+    if (reproductionError) return reproductionError
+  }
   return stringListError(value.evidenceIds, `${path}.evidenceIds`, { minimum: 1, safe: true })
+}
+
+function findingReproductionContractError(value: unknown, path: string): string | undefined {
+  if (!isRecord(value)) return `${path} must be an object`
+  const extra = unexpectedKey(value, ["verdict", "bundleId", "steps", "runner", "at"])
+  if (extra) return `${path} contains unexpected field ${extra}`
+  if (!["reproduced", "not-reproduced", "inconclusive"].includes(String(value.verdict))) return `${path}.verdict is invalid`
+  if (!validIdentifier(value.bundleId)) return `${path}.bundleId is invalid`
+  if (!positiveSafeInteger(value.steps) || Number(value.steps) > POC_MAX_STEPS) return `${path}.steps is invalid`
+  if (value.runner !== "local" && value.runner !== "container") return `${path}.runner is invalid`
+  if (typeof value.at !== "string" || !Number.isFinite(Date.parse(value.at))) return `${path}.at is invalid`
+  return undefined
 }
 
 export function evidenceRefContractError(value: unknown, path = "evidence"): string | undefined {
@@ -465,7 +789,7 @@ export function evidenceRefContractError(value: unknown, path = "evidence"): str
   const extra = unexpectedKey(value, ["id", "kind", "uri", "sha256", "capturedAt", "source", "contentType", "sizeBytes"])
   if (extra) return `${path} contains unexpected field ${extra}`
   if (!validIdentifier(value.id)) return `${path}.id is invalid`
-  if (!["fixture", "request", "response", "log", "report"].includes(String(value.kind))) return `${path}.kind is invalid`
+  if (!["fixture", "request", "response", "log", "report", "poc"].includes(String(value.kind))) return `${path}.kind is invalid`
   if (!validTokenText(value.uri, 2_048) || !/^[a-f0-9]{64}$/.test(String(value.sha256))) return `${path} has invalid URI or SHA-256`
   if (typeof value.capturedAt !== "string" || !Number.isFinite(Date.parse(value.capturedAt))) return `${path}.capturedAt is invalid`
   if ("source" in value && !validIdentifier(value.source)) return `${path}.source is invalid`
@@ -529,4 +853,256 @@ function nonNegativeSafeInteger(value: unknown): value is number {
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
+}
+
+// ---------------------------------------------------------------------------
+// JSON Schemas for provider-facing exchanges. Kept beside the contracts they
+// mirror so a runtime adapter cannot drift from the validated shape.
+// ---------------------------------------------------------------------------
+
+export const identifierSchema = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", maxLength: 128 } as const
+export const evidenceIdListSchema = {
+  type: "array",
+  minItems: 1,
+  maxItems: 1_000,
+  uniqueItems: true,
+  items: identifierSchema,
+} as const
+export const taskSpecSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "key", "role", "objective", "target", "capabilities", "dependencies", "depth", "expectedOutput"],
+  properties: {
+    id: identifierSchema,
+    key: { type: "string", minLength: 1, maxLength: 512 },
+    parentTaskId: identifierSchema,
+    role: { enum: ["recon", "web", "api", "validator", "reporter"] },
+    objective: { type: "string", minLength: 1, maxLength: 8_192 },
+    target: { type: "string", minLength: 1, maxLength: 2_048 },
+    capabilities: { type: "array", minItems: 1, maxItems: 1_000, uniqueItems: true, items: identifierSchema },
+    dependencies: { type: "array", maxItems: 1_000, uniqueItems: true, items: identifierSchema },
+    depth: { type: "integer", minimum: 1 },
+    expectedOutput: { enum: ["inventory", "assessment", "validation", "report"] },
+    findingId: identifierSchema,
+    skillId: identifierSchema,
+  },
+} as const
+
+export const findingReproductionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "bundleId", "steps", "runner", "at"],
+  properties: {
+    verdict: { enum: ["reproduced", "not-reproduced", "inconclusive"] },
+    bundleId: identifierSchema,
+    steps: { type: "integer", minimum: 1, maximum: POC_MAX_STEPS },
+    runner: { enum: ["local", "container"] },
+    at: { type: "string" },
+  },
+} as const
+
+/**
+ * Provider-facing shape of a reproduction plan. A model may propose one; the
+ * contract validators above, not this schema, decide what actually runs.
+ */
+export const pocPlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["version", "findingId", "title", "rationale", "steps"],
+  properties: {
+    version: { const: POC_VERSION },
+    findingId: identifierSchema,
+    title: { type: "string", minLength: 1, maxLength: 512 },
+    rationale: { type: "string", minLength: 1, maxLength: 4_096 },
+    steps: {
+      type: "array",
+      minItems: 1,
+      maxItems: POC_MAX_STEPS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "description", "method", "url", "expect"],
+        properties: {
+          id: identifierSchema,
+          description: { type: "string", minLength: 1, maxLength: 512 },
+          method: { enum: ["GET", "HEAD", "OPTIONS"] },
+          url: { type: "string", minLength: 1, maxLength: 2_048 },
+          headers: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 1_024 } },
+          expect: {
+            type: "object",
+            additionalProperties: false,
+            minProperties: 1,
+            properties: {
+              status: { type: "array", minItems: 1, maxItems: 8, items: { type: "integer", minimum: 100, maximum: 599 } },
+              headersPresent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
+              headersAbsent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
+              contentType: { type: "string", minLength: 1, maxLength: 256 },
+              bodyIncludes: { type: "string", minLength: 1, maxLength: 256 },
+              bodyExcludes: { type: "string", minLength: 1, maxLength: 256 },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const
+
+export const rootDecisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["version", "action"],
+  properties: {
+    version: { const: CONTRACT_VERSION },
+    action: {
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "tasks", "rationale"],
+          properties: {
+            kind: { const: "delegate" },
+            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
+            tasks: { type: "array", minItems: 1, maxItems: 1_000, items: taskSpecSchema },
+          },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "rationale"],
+          properties: {
+            kind: { const: "finish" },
+            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
+          },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "reason", "rationale"],
+          properties: {
+            kind: { const: "stop" },
+            reason: { enum: ["budget", "deadline", "policy", "operator"] },
+            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
+          },
+        },
+      ],
+    },
+  },
+} as const
+
+export const rootDecisionReviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "rationale"],
+  properties: {
+    verdict: { enum: ["accept", "stop"] },
+    rationale: { type: "string", minLength: 1, maxLength: 4_096 },
+  },
+} as const
+
+export const workerResultReviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "summary"],
+  properties: {
+    verdict: { enum: ["accept", "flag"] },
+    summary: { type: "string", minLength: 1, maxLength: 16_384 },
+  },
+} as const
+
+export const workerResultSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "observations", "findings", "evidence"],
+  properties: {
+    summary: { type: "string", minLength: 1, maxLength: 16_384 },
+    observations: {
+      type: "array",
+      maxItems: 1_000,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "asset", "summary", "source", "evidenceIds"],
+        properties: {
+          id: identifierSchema,
+          asset: { type: "string", minLength: 1, maxLength: 2_048 },
+          summary: { type: "string", minLength: 1, maxLength: 16_384 },
+          source: identifierSchema,
+          evidenceIds: evidenceIdListSchema,
+        },
+      },
+    },
+    findings: {
+      type: "array",
+      maxItems: 1_000,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "title", "asset", "severity", "status", "summary", "discoveredBy", "evidenceIds"],
+        properties: {
+          id: identifierSchema,
+          title: { type: "string", minLength: 1, maxLength: 512 },
+          asset: { type: "string", minLength: 1, maxLength: 2_048 },
+          severity: { enum: ["info", "low", "medium", "high", "critical"] },
+          status: { enum: ["candidate", "validating", "confirmed", "rejected", "inconclusive"] },
+          skillId: identifierSchema,
+          summary: { type: "string", minLength: 1, maxLength: 16_384 },
+          discoveredBy: identifierSchema,
+          validatedBy: identifierSchema,
+          evidenceIds: evidenceIdListSchema,
+          reproduction: findingReproductionSchema,
+        },
+      },
+    },
+    evidence: {
+      type: "array",
+      maxItems: 2_000,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "kind", "uri", "sha256", "capturedAt"],
+        properties: {
+          id: identifierSchema,
+          kind: { enum: ["fixture", "request", "response", "log", "report", "poc"] },
+          uri: { type: "string", minLength: 1, maxLength: 2_048 },
+          sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          capturedAt: { type: "string" },
+          source: identifierSchema,
+          contentType: { type: "string", minLength: 1, maxLength: 128 },
+          sizeBytes: { type: "integer", minimum: 0 },
+        },
+      },
+    },
+    report: { type: "string", maxLength: 1_048_576 },
+    usage: {
+      type: "object",
+      additionalProperties: false,
+      required: ["inputTokens", "outputTokens", "costUsd"],
+      properties: {
+        inputTokens: { type: "integer", minimum: 0 },
+        outputTokens: { type: "integer", minimum: 0 },
+        costUsd: { type: "number", minimum: 0 },
+      },
+    },
+  },
+} as const
+
+/**
+ * The engagement projection a planner is allowed to see: public records only,
+ * no transcripts, no credentials, no artifact bodies.
+ */
+export function publicPlannerState(snapshot: EngagementSnapshot): object {
+  return {
+    engagement: {
+      id: snapshot.manifest.id,
+      objective: snapshot.manifest.objective,
+      scope: snapshot.manifest.scope,
+      budgets: snapshot.manifest.budgets,
+    },
+    status: snapshot.status,
+    tasks: snapshot.tasks.map(({ id, role, objective, target, status, dependencies }) => ({
+      id, role, objective, target, status, dependencies,
+    })),
+    findings: snapshot.findings,
+    evidence: snapshot.evidence.map(({ id, kind, uri, sha256 }) => ({ id, kind, uri, sha256 })),
+  }
 }

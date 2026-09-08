@@ -2,13 +2,22 @@
   "name": "@cyrion/cli",
   "version": "0.1.0-alpha.2",
   "type": "module",
-  "bin": { "cyrion": "./src/index.ts" },
+  "bin": {
+    "cyrion": "./src/index.ts"
+  },
   "dependencies": {
+    "@cyrion/assessment": "workspace:*",
+    "@cyrion/capabilities": "workspace:*",
     "@cyrion/contracts": "workspace:*",
     "@cyrion/controller": "workspace:*",
     "@cyrion/evidence": "workspace:*",
+    "@cyrion/llm": "workspace:*",
+    "@cyrion/mcp": "workspace:*",
     "@cyrion/reporting": "workspace:*",
     "@cyrion/runtime-opencode": "workspace:*",
+    "@cyrion/sandbox": "workspace:*",
+    "@cyrion/scope": "workspace:*",
+    "@cyrion/skills": "workspace:*",
     "@opentui/core": "0.5.10"
   }
 }

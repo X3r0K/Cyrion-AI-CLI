@@ -1,0 +1,18 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "validate-reproduction",
+  "name": "Independent reproduction of a candidate",
+  "appliesTo": { "kinds": ["url", "host"], "capabilities": ["http.probe"], "roles": ["validator"] },
+  "objective": "Reproduce a candidate from its record alone and record a verdict with fresh evidence.",
+  "preconditions": ["A candidate finding exists with evidence and an affected asset"],
+  "steps": [
+    "Work from the finding record, never from the discovering worker's transcript.",
+    "Repeat the observation against the same approved asset and capture new evidence.",
+    "Confirm only when the fresh evidence shows the same behavior; reject when it does not; record inconclusive when the evidence is incomplete."
+  ],
+  "expectedEvidence": ["response"],
+  "falsePositives": [
+    "A transient response can look like a fix or a break; prefer inconclusive over a confident wrong verdict."
+  ],
+  "severity": "info"
+}

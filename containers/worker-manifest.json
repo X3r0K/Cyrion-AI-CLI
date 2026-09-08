@@ -1,0 +1,11 @@
+{
+  "image": "cyrion/kali-worker:0.1",
+  "builtAt": "2026-09-07T21:47:03Z",
+  "tools": {
+    "nmap": "Nmap version 7.99 ( https://nmap.org )",
+    "openssl": "OpenSSL 3.6.3 9 Jun 2026 (Library: OpenSSL 3.6.3 9 Jun 2026)",
+    "ffuf": "Fuzz Faster U Fool - 2.1.0-dev",
+    "katana": "[INF] Current version: v1.1.2",
+    "dnsx": "[INF] Current Version: 1.2.1"
+  }
+}

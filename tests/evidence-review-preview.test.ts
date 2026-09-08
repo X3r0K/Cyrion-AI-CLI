@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto"
 import { describe, expect, test } from "bun:test"
 import type { EvidenceRef, EvidenceStore } from "@cyrion/contracts"
-import { MemoryEvidenceStore } from "@cyrion/evidence"
-import { collectEvidenceReviewPreviews } from "@cyrion/runtime-opencode"
+import { MemoryEvidenceStore, collectEvidenceReviewPreviews } from "@cyrion/evidence"
 
 describe("provider evidence review previews", () => {
   test("discloses only bounded, verified text and removes unsafe controls", async () => {

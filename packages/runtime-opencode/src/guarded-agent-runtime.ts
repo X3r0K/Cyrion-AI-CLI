@@ -5,23 +5,12 @@ import {
   type RuntimeContext,
   type TaskSpec,
   type WorkerResult,
+  type WorkerResultReview,
+  type WorkerResultReviewer,
+  type WorkerReviewOutcome,
 } from "@cyrion/contracts"
 
-export interface WorkerResultReview {
-  verdict: "accept" | "flag"
-  summary: string
-}
-
-export interface WorkerReviewOutcome {
-  review: WorkerResultReview
-  usage: ResourceUsage
-}
-
-export interface WorkerResultReviewer {
-  reviewTask(task: TaskSpec, context: RuntimeContext, result: WorkerResult): Promise<WorkerReviewOutcome>
-  cancel(agentId: string): Promise<void>
-  close(): Promise<void>
-}
+export type { WorkerResultReview, WorkerResultReviewer, WorkerReviewOutcome } from "@cyrion/contracts"
 
 /**
  * Executes a canonical scoped worker first, then lets a provider review only

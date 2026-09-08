@@ -1,0 +1,63 @@
+# Cyrion Community worker image.
+#
+# Contains the assessment tools the capability catalog names, and nothing that
+# helps a process leave the container. It runs unprivileged: the controller
+# starts it with a read-only root, all capabilities dropped, and an egress
+# allowlist installed from the host into this container's network namespace.
+#
+# Build with containers/build-worker.sh, which verifies every catalogued binary
+# is present and records the versions that produced a run.
+FROM kalilinux/kali-rolling:latest
+
+LABEL org.opencontainers.image.title="Cyrion Community worker"
+LABEL org.opencontainers.image.description="Assessment toolchain for authorized engagements"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    HOME=/work
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      dnsutils \
+      ffuf \
+      git \
+      jq \
+      nmap \
+      openssl \
+      python3-minimal \
+      unzip \
+      whatweb \
+      wordlists \
+ && rm -rf /var/lib/apt/lists/*
+
+# Go-distributed scanners are not in the Debian archive; pin them by version.
+ARG KATANA_VERSION=1.1.2
+ARG DNSX_VERSION=1.2.1
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    for tool in "katana:${KATANA_VERSION}" "dnsx:${DNSX_VERSION}"; do \
+      name="${tool%%:*}"; version="${tool##*:}"; \
+      url="https://github.com/projectdiscovery/${name}/releases/download/v${version}/${name}_${version}_linux_${arch}.zip"; \
+      if curl -fsSL -o "/tmp/${name}.zip" "$url"; then \
+        unzip -o -j "/tmp/${name}.zip" "${name}" -d /usr/local/bin; \
+        chmod 0755 "/usr/local/bin/${name}"; \
+      else \
+        echo "skipping ${name}: no release asset for ${arch}"; \
+      fi; \
+      rm -f "/tmp/${name}.zip"; \
+    done
+
+# Unprivileged by default. The controller also passes --user, so an image that
+# forgets this is still run without root.
+RUN useradd --create-home --home-dir /work --shell /usr/sbin/nologin --uid 1000 pentester \
+ && chown -R 1000:1000 /work
+
+USER 1000:1000
+WORKDIR /work
+
+# The controller execs each capability; the container itself only needs to stay up.
+ENTRYPOINT []
+CMD ["sleep", "infinity"]

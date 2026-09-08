@@ -1,0 +1,12 @@
+{
+  "name": "@cyrion/assessment",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@cyrion/capabilities": "workspace:*",
+    "@cyrion/contracts": "workspace:*",
+    "@cyrion/scope": "workspace:*",
+    "@cyrion/skills": "workspace:*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "version": "cyrion.community/mcp-v1",
+  "servers": [
+    {
+      "id": "github",
+      "command": "mcp-github",
+      "args": ["--stdio"],
+      "passEnv": ["GITHUB_TOKEN"],
+      "startTimeoutMs": 20000,
+      "tools": [
+        { "tool": "search_code", "capability": "repo.search", "timeoutMs": 15000, "maxOutputBytes": 200000 }
+      ]
+    }
+  ]
+}

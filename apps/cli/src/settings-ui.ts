@@ -1,9 +1,13 @@
 import type { ProviderSummary } from "@cyrion/runtime-opencode"
-import type { TerminalSettings } from "./provider-config"
+import { textSettingsFields, type TerminalSettings, type TextSettingsField } from "./provider-config"
 
 export const settingsFields = [
   "provider",
   "model",
+  "llmKind",
+  "llmBaseUrl",
+  "llmModel",
+  "llmApiKeyEnv",
   "defaultPlanner",
   "defaultWorkers",
   "defaultMode",
@@ -11,6 +15,11 @@ export const settingsFields = [
   "colorMode",
 ] as const
 export type SettingsField = (typeof settingsFields)[number]
+
+/** Fields an operator types into rather than cycles through with the arrows. */
+export function isTextSettingsField(field: SettingsField): field is TextSettingsField {
+  return (textSettingsFields as readonly string[]).includes(field)
+}
 
 export interface SettingsEditorState {
   draft: TerminalSettings
@@ -48,10 +57,15 @@ export function adjustSetting(
     const model = cycle(models, draft.modelID, delta)
     if (!model) return state
     draft.modelID = model.id
+  } else if (field === "llmKind") {
+    draft.llmKind = cycleValues(["openai-compatible", "anthropic", "ollama"], draft.llmKind, delta)
+  } else if (isTextSettingsField(field)) {
+    // Typed, not cycled: the caller opens the editor instead.
+    return state
   } else if (field === "defaultPlanner") {
-    draft.defaultPlanner = cycleValues(["fixture", "opencode"], draft.defaultPlanner, delta)
+    draft.defaultPlanner = cycleValues(["fixture", "opencode", "llm", "llm-author"], draft.defaultPlanner, delta)
   } else if (field === "defaultWorkers") {
-    draft.defaultWorkers = cycleValues(["fixture", "opencode"], draft.defaultWorkers, delta)
+    draft.defaultWorkers = cycleValues(["fixture", "opencode", "llm"], draft.defaultWorkers, delta)
   } else if (field === "defaultMode") {
     draft.defaultMode = cycleValues(["autonomous", "supervised"], draft.defaultMode, delta)
   } else if (field === "defaultFixture") {
@@ -60,6 +74,16 @@ export function adjustSetting(
     draft.colorMode = cycleValues(["auto", "color", "monochrome"], draft.colorMode, delta)
   }
   return { ...state, draft }
+}
+
+/** Applies typed text to the selected field, bounded and free of control characters. */
+export function editSetting(
+  state: SettingsEditorState,
+  field: TextSettingsField,
+  value: string,
+): SettingsEditorState {
+  const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim().slice(0, 512)
+  return { ...state, draft: { ...state.draft, [field]: clean } }
 }
 
 export function settingsAreDirty(state: SettingsEditorState): boolean {
@@ -78,6 +102,16 @@ export function valueForField(settings: TerminalSettings, field: SettingsField):
   if (field === "provider") return settings.providerID
   if (field === "model") return settings.modelID
   return settings[field]
+}
+
+/**
+ * Whether the profile can actually drive an LLM runtime.
+ *
+ * Settings reports this rather than leaving the operator to discover it at the
+ * next launch, which is the whole point of editing the endpoint here.
+ */
+export function llmEndpointConfigured(settings: TerminalSettings): boolean {
+  return Boolean(settings.llmBaseUrl && settings.llmModel)
 }
 
 function cycle<T extends { id: string }>(items: T[], currentID: string, delta: -1 | 1): T | undefined {

@@ -1,10 +1,11 @@
 import type { EngagementSnapshot, EvidenceRef, Finding, TaskRecord } from "@cyrion/contracts"
 import type { ViewName } from "./format"
 
-export type InputMode = "dashboard" | "chat"
+/** `setting` is chat's sibling: the footer input edits one settings field. */
+export type InputMode = "dashboard" | "chat" | "setting"
 
 export function isTextInputActive(mode: InputMode, inputFocused: boolean): boolean {
-  return mode === "chat" || inputFocused
+  return mode === "chat" || mode === "setting" || inputFocused
 }
 
 export function viewNavigationDelta(key: string, settingsActive: boolean): -1 | 1 | undefined {

@@ -5,6 +5,7 @@ import {
   createSettingsEditor,
   moveSettingsSelection,
   revertSettingsEditor,
+  selectedSettingsField,
   settingsAreDirty,
 } from "../apps/cli/src/settings-ui"
 
@@ -35,6 +36,10 @@ describe("terminal settings editor", () => {
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     state = adjustSetting(state, providers, 1)
     expect(state.draft.providerID).toBe("opencode")
@@ -51,11 +56,14 @@ describe("terminal settings editor", () => {
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
-    state = moveSettingsSelection(state, 1)
-    state = moveSettingsSelection(state, 1)
-    state = moveSettingsSelection(state, 1)
-    state = moveSettingsSelection(state, 1)
+    // Walk to the field by name, so inserting a setting cannot silently move
+    // this test onto a different one.
+    while (selectedSettingsField(state) !== "defaultMode") state = moveSettingsSelection(state, 1)
     state = adjustSetting(state, providers, 1)
     expect(state.draft.defaultMode).toBe("supervised")
     expect(revertSettingsEditor(state).draft.defaultMode).toBe("autonomous")

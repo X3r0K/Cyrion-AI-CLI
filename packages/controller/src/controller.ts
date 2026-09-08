@@ -24,6 +24,7 @@ import {
   type WorkerResult,
 } from "@cyrion/contracts"
 import { MemoryEvidenceStore } from "@cyrion/evidence"
+import { evaluateScope, scopeHash, scopePolicyError, verifyScopeLock } from "@cyrion/scope"
 import { type EngagementStore, MemoryEventStore } from "./event-store"
 import { ScopedToolGateway } from "./tool-gateway"
 
@@ -34,6 +35,8 @@ export interface ControllerOptions {
   heartbeatIntervalMs?: number
   autoApprove?: boolean
   evidenceStore?: EvidenceStore
+  /** Operator attestation bound to this exact scope. Required by `cyrion engage`. */
+  scopeLock?: unknown
 }
 
 export class CyrionController {
@@ -59,6 +62,12 @@ export class CyrionController {
     options: ControllerOptions = {},
   ) {
     assertManifest(manifest)
+    const policyError = scopePolicyError(manifest.scope)
+    if (policyError) throw new Error(`Invalid engagement scope: ${policyError}`)
+    if (options.scopeLock !== undefined) {
+      const lockError = verifyScopeLock(options.scopeLock, manifest)
+      if (lockError) throw new Error(lockError)
+    }
     this.#runtime = runtime
     this.#planner = planner
     this.#agentsDir = agentsDir
@@ -296,7 +305,11 @@ export class CyrionController {
   #start(): void {
     const root: AgentRecord = { id: "root-agent", role: "root", name: "root-agent", status: "running" }
     const startedAt = new Date().toISOString()
-    this.#record("engagement.started", { root, objective: this.#snapshot.manifest.objective })
+    this.#record("engagement.started", {
+      root,
+      objective: this.#snapshot.manifest.objective,
+      scopeHash: scopeHash(this.#snapshot.manifest.scope),
+    })
     this.#snapshot.status = "running"
     this.#snapshot.startedAt = startedAt
     this.#snapshot.agents.push({ ...root, startedAt })
@@ -565,10 +578,13 @@ export class CyrionController {
   async #dispatch(task: TaskRecord): Promise<void> {
     const agentId = `${task.role}-${task.id.toLowerCase()}`
     const now = new Date().toISOString()
+    // Number agents per role, so a swarm with three web workers is readable.
+    const existingName = this.#snapshot.agents.find((agent) => agent.id === agentId)?.name
+    const ordinal = this.#snapshot.agents.filter((agent) => agent.role === task.role).length + 1
     const agentState: AgentRecord = {
       id: agentId,
       role: task.role,
-      name: `${task.role}-01`,
+      name: existingName ?? `${task.role}-${String(ordinal).padStart(2, "0")}`,
       taskId: task.id,
       parentId: "root-agent",
       status: "running",
@@ -609,6 +625,13 @@ export class CyrionController {
         task,
         emit: (type, payload, emittedAgentId, taskId) => this.#record(type, payload, emittedAgentId, taskId),
       })
+      const candidate = task.role === "validator" && task.findingId
+        ? this.#snapshot.findings.find((finding) => finding.id === task.findingId)
+        : undefined
+      // The record and the artifacts behind it, never the discoverer's transcript.
+      const candidateEvidence = candidate
+        ? this.#snapshot.evidence.filter((item) => candidate.evidenceIds.includes(item.id))
+        : undefined
       const result = await this.#runtime.runTask(task, {
         engagementId: this.#snapshot.manifest.id,
         agentId,
@@ -618,6 +641,8 @@ export class CyrionController {
         remainingBudget: this.#remainingBudget(),
         tools,
         evidenceStore: this.#evidenceStore,
+        ...(candidate ? { candidate: structuredClone(candidate) } : {}),
+        ...(candidateEvidence ? { candidateEvidence: structuredClone(candidateEvidence) } : {}),
       })
       clearInterval(heartbeat)
       const contractRejection = workerResultContractError(result)
@@ -699,7 +724,8 @@ export class CyrionController {
       if (task.dependencies.includes(task.id)) return `Self dependency rejected: ${task.id}`
       if (task.parentTaskId === task.id) return `Self parent rejected: ${task.id}`
       if (task.parentTaskId && !knownIds.has(task.parentTaskId)) return `Unknown parent task in ${task.id}`
-      if (!scope.targets.includes(task.target) || scope.excluded.includes(task.target)) return `Out-of-scope target: ${task.target}`
+      const decision = evaluateScope(scope, task.target)
+      if (!decision.allowed) return `Out-of-scope target: ${task.target} (${decision.reason})`
       if (task.capabilities.some((capability) => !scope.capabilities.includes(capability))) {
         return `Capability not granted: ${task.id}`
       }
@@ -790,6 +816,7 @@ export function taskInputHash(task: TaskSpec): string {
     depth: task.depth,
     expectedOutput: task.expectedOutput,
     findingId: task.findingId ?? null,
+    skillId: task.skillId ?? null,
   }
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex")
 }
@@ -868,11 +895,21 @@ export function workerResultPolicyError(
       || verdict.title !== existing.title
       || verdict.asset !== existing.asset
       || verdict.severity !== existing.severity
+      || verdict.skillId !== existing.skillId
     ) return "Validator changed immutable candidate fields"
     if (!existing.evidenceIds.every((id) => verdict.evidenceIds.includes(id))) {
       return "Validator removed discovery evidence"
     }
     if (!verdict.evidenceIds.some((id) => evidenceIds.has(id))) return "Validator did not attach fresh evidence"
+    if (verdict.reproduction) {
+      const { bundleId, verdict: reproduced } = verdict.reproduction
+      if (!evidenceIds.has(bundleId)) return `Reproduction bundle ${bundleId} was not captured by this validation`
+      if (!verdict.evidenceIds.includes(bundleId)) return `Finding ${verdict.id} does not cite its reproduction bundle`
+      const implied = { reproduced: "confirmed", "not-reproduced": "rejected", inconclusive: "inconclusive" }[reproduced]
+      if (verdict.status !== implied) {
+        return `Reproduction verdict ${reproduced} does not support status ${verdict.status}`
+      }
+    }
     return undefined
   }
 
@@ -883,6 +920,7 @@ export function workerResultPolicyError(
       return `Worker finding ${finding.id} has invalid discovery provenance`
     }
     if (!finding.evidenceIds.some((id) => evidenceIds.has(id))) return `Worker finding ${finding.id} has no fresh evidence`
+    if (finding.reproduction) return `Worker finding ${finding.id} cannot claim a reproduction it did not run`
   }
   return undefined
 }

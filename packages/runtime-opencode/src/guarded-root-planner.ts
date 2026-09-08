@@ -3,19 +3,12 @@ import {
   type EngagementSnapshot,
   type ResourceUsage,
   type RootDecision,
+  type RootDecisionReview,
+  type RootDecisionReviewer,
   type RootPlanner,
 } from "@cyrion/contracts"
 
-export interface RootDecisionReview {
-  verdict: "accept" | "stop"
-  rationale: string
-}
-
-export interface RootDecisionReviewer {
-  review(snapshot: EngagementSnapshot, proposal: RootDecision): Promise<RootDecisionReview>
-  takeUsage?(): ResourceUsage | undefined
-  close(): Promise<void>
-}
+export type { RootDecisionReview, RootDecisionReviewer } from "@cyrion/contracts"
 
 /**
  * Lets a provider review one controller-generated transition without allowing

@@ -1,0 +1,11 @@
+{
+  "name": "@cyrion/capabilities",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@cyrion/contracts": "workspace:*",
+    "@cyrion/sandbox": "workspace:*",
+    "@cyrion/scope": "workspace:*"
+  }
+}

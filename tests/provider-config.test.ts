@@ -64,6 +64,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "monochrome",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     expect(updated).toContain("OPENCODE_API_KEY=keep-private")
     expect(updated).toContain("CYRION_DEFAULT_PLANNER=opencode")
@@ -80,6 +84,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     expect(() => readGeneralSettings({ CYRION_COLOR_MODE: "transparent" }))
       .toThrow("CYRION_COLOR_MODE must be one of")
@@ -96,6 +104,10 @@ describe("provider selection persistence", () => {
       defaultMode: "supervised",
       defaultFixture: "incomplete",
       colorMode: "color",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     const output = await readFile(path, "utf8")
     expect(output).toContain("CYRION_PROVIDER_ID=opencode")
@@ -119,6 +131,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     expect(await readFile(path, "utf8")).toContain("CYRION_DEFAULT_FIXTURE=clean")
     expect(saveGeneralSettings(path, {
@@ -129,6 +145,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })).rejects.toThrow("Choose both an LLM provider and model")
     expect(saveGeneralSettings(path, {
       providerID: "",
@@ -138,6 +158,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })).rejects.toThrow("OpenCode planning or workers require an LLM provider and model")
     expect(saveGeneralSettings(path, {
       providerID: "",
@@ -147,6 +171,10 @@ describe("provider selection persistence", () => {
       defaultMode: "autonomous",
       defaultFixture: "clean",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })).rejects.toThrow("OpenCode planning or workers require an LLM provider and model")
   })
 })

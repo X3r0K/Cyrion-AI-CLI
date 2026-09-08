@@ -5,6 +5,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@cyrion/contracts": "workspace:*",
-    "@cyrion/evidence": "workspace:*"
+    "@cyrion/evidence": "workspace:*",
+    "@cyrion/scope": "workspace:*"
   }
 }

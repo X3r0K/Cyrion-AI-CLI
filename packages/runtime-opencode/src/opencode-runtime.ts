@@ -4,6 +4,11 @@ import { createOpencode, type OpencodeClient } from "@opencode-ai/sdk/v2"
 import {
   CONTRACT_VERSION,
   assertRootDecision,
+  publicPlannerState,
+  rootDecisionReviewSchema,
+  rootDecisionSchema,
+  workerResultReviewSchema,
+  workerResultSchema,
   assertWorkerResult,
   type AgentRuntime,
   type EngagementSnapshot,
@@ -13,13 +18,14 @@ import {
   type TaskSpec,
   type WorkerResult,
 } from "@cyrion/contracts"
-import type { RootDecisionReview, RootDecisionReviewer } from "./guarded-root-planner"
 import type {
+  RootDecisionReview,
+  RootDecisionReviewer,
   WorkerResultReview,
   WorkerResultReviewer,
   WorkerReviewOutcome,
-} from "./guarded-agent-runtime"
-import { collectEvidenceReviewPreviews } from "./evidence-review-preview"
+} from "@cyrion/contracts"
+import { collectEvidenceReviewPreviews } from "@cyrion/evidence"
 import { sanitizeProviderDiagnostic } from "./provider-status"
 
 export interface RuntimeOptions {
@@ -67,170 +73,6 @@ const safePromptTools = {
   todowrite: true,
 } as const
 
-const identifierSchema = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", maxLength: 128 } as const
-const evidenceIdListSchema = {
-  type: "array",
-  minItems: 1,
-  maxItems: 1_000,
-  uniqueItems: true,
-  items: identifierSchema,
-} as const
-const taskSpecSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["id", "key", "role", "objective", "target", "capabilities", "dependencies", "depth", "expectedOutput"],
-  properties: {
-    id: identifierSchema,
-    key: { type: "string", minLength: 1, maxLength: 512 },
-    parentTaskId: identifierSchema,
-    role: { enum: ["recon", "web", "api", "validator", "reporter"] },
-    objective: { type: "string", minLength: 1, maxLength: 8_192 },
-    target: { type: "string", minLength: 1, maxLength: 2_048 },
-    capabilities: { type: "array", minItems: 1, maxItems: 1_000, uniqueItems: true, items: identifierSchema },
-    dependencies: { type: "array", maxItems: 1_000, uniqueItems: true, items: identifierSchema },
-    depth: { type: "integer", minimum: 1 },
-    expectedOutput: { enum: ["inventory", "assessment", "validation", "report"] },
-    findingId: identifierSchema,
-  },
-} as const
-
-const rootDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["version", "action"],
-  properties: {
-    version: { const: CONTRACT_VERSION },
-    action: {
-      oneOf: [
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["kind", "tasks", "rationale"],
-          properties: {
-            kind: { const: "delegate" },
-            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
-            tasks: { type: "array", minItems: 1, maxItems: 1_000, items: taskSpecSchema },
-          },
-        },
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["kind", "rationale"],
-          properties: {
-            kind: { const: "finish" },
-            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
-          },
-        },
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["kind", "reason", "rationale"],
-          properties: {
-            kind: { const: "stop" },
-            reason: { enum: ["budget", "deadline", "policy", "operator"] },
-            rationale: { type: "string", minLength: 1, maxLength: 4_096 },
-          },
-        },
-      ],
-    },
-  },
-} as const
-
-const rootDecisionReviewSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdict", "rationale"],
-  properties: {
-    verdict: { enum: ["accept", "stop"] },
-    rationale: { type: "string", minLength: 1, maxLength: 4_096 },
-  },
-} as const
-
-const workerResultReviewSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdict", "summary"],
-  properties: {
-    verdict: { enum: ["accept", "flag"] },
-    summary: { type: "string", minLength: 1, maxLength: 16_384 },
-  },
-} as const
-
-const workerResultSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["summary", "observations", "findings", "evidence"],
-  properties: {
-    summary: { type: "string", minLength: 1, maxLength: 16_384 },
-    observations: {
-      type: "array",
-      maxItems: 1_000,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "asset", "summary", "source", "evidenceIds"],
-        properties: {
-          id: identifierSchema,
-          asset: { type: "string", minLength: 1, maxLength: 2_048 },
-          summary: { type: "string", minLength: 1, maxLength: 16_384 },
-          source: identifierSchema,
-          evidenceIds: evidenceIdListSchema,
-        },
-      },
-    },
-    findings: {
-      type: "array",
-      maxItems: 1_000,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "title", "asset", "severity", "status", "summary", "discoveredBy", "evidenceIds"],
-        properties: {
-          id: identifierSchema,
-          title: { type: "string", minLength: 1, maxLength: 512 },
-          asset: { type: "string", minLength: 1, maxLength: 2_048 },
-          severity: { enum: ["info", "low", "medium", "high", "critical"] },
-          status: { enum: ["candidate", "validating", "confirmed", "rejected", "inconclusive"] },
-          summary: { type: "string", minLength: 1, maxLength: 16_384 },
-          discoveredBy: identifierSchema,
-          validatedBy: identifierSchema,
-          evidenceIds: evidenceIdListSchema,
-        },
-      },
-    },
-    evidence: {
-      type: "array",
-      maxItems: 2_000,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "kind", "uri", "sha256", "capturedAt"],
-        properties: {
-          id: identifierSchema,
-          kind: { enum: ["fixture", "request", "response", "log", "report"] },
-          uri: { type: "string", minLength: 1, maxLength: 2_048 },
-          sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-          capturedAt: { type: "string" },
-          source: identifierSchema,
-          contentType: { type: "string", minLength: 1, maxLength: 128 },
-          sizeBytes: { type: "integer", minimum: 0 },
-        },
-      },
-    },
-    report: { type: "string", maxLength: 1_048_576 },
-    usage: {
-      type: "object",
-      additionalProperties: false,
-      required: ["inputTokens", "outputTokens", "costUsd"],
-      properties: {
-        inputTokens: { type: "integer", minimum: 0 },
-        outputTokens: { type: "integer", minimum: 0 },
-        costUsd: { type: "number", minimum: 0 },
-      },
-    },
-  },
-} as const
-
 export class OpenCodeRuntime implements AgentRuntime, RootPlanner, RootDecisionReviewer, WorkerResultReviewer {
   readonly #options: RuntimeOptions
   readonly #sessions = new Map<string, string>()
@@ -245,7 +87,7 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner, RootDecisionR
 
   async decide(snapshot: EngagementSnapshot): Promise<RootDecision> {
     const systemPrompt = await readFile(join(this.#options.agentsDir, "root", "system.md"), "utf8")
-    const publicState = plannerState(snapshot)
+    const publicState = publicPlannerState(snapshot)
     const response = await this.#prompt(
       "root-agent",
       "Cyrion Root",
@@ -260,7 +102,7 @@ export class OpenCodeRuntime implements AgentRuntime, RootPlanner, RootDecisionR
 
   async review(snapshot: EngagementSnapshot, proposal: RootDecision): Promise<RootDecisionReview> {
     const systemPrompt = await readFile(join(this.#options.agentsDir, "root", "system.md"), "utf8")
-    const publicState = plannerState(snapshot)
+    const publicState = publicPlannerState(snapshot)
     const response = await this.#prompt(
       "root-agent",
       "Cyrion Root",
@@ -535,23 +377,6 @@ function strictJsonPrompt(text: string, schema: Record<string, unknown>): string
     "Do not use Markdown fences, commentary, or additional keys.",
     `The JSON must conform exactly to this schema:\n${JSON.stringify(schema)}`,
   ].join("\n")
-}
-
-function plannerState(snapshot: EngagementSnapshot): object {
-  return {
-    engagement: {
-      id: snapshot.manifest.id,
-      objective: snapshot.manifest.objective,
-      scope: snapshot.manifest.scope,
-      budgets: snapshot.manifest.budgets,
-    },
-    status: snapshot.status,
-    tasks: snapshot.tasks.map(({ id, role, objective, target, status, dependencies }) => ({
-      id, role, objective, target, status, dependencies,
-    })),
-    findings: snapshot.findings,
-    evidence: snapshot.evidence.map(({ id, kind, uri, sha256 }) => ({ id, kind, uri, sha256 })),
-  }
 }
 
 function assertRootDecisionReview(value: unknown): asserts value is RootDecisionReview {

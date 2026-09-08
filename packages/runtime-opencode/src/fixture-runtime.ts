@@ -13,6 +13,13 @@ import type {
 
 export type FixtureScenario = "known-positive" | "clean" | "rejected" | "incomplete"
 
+/**
+ * Bumped whenever a fixture changes the bytes it captures under an existing
+ * evidence ID. Artifacts written by an earlier version cannot be reused,
+ * because the evidence store refuses to rewrite an ID with new content.
+ */
+export const FIXTURE_EVIDENCE_VERSION = "2"
+
 export interface FixtureRuntimeOptions {
   scenario?: FixtureScenario
 }

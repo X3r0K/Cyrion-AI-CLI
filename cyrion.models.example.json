@@ -1,0 +1,32 @@
+{
+  "endpoints": [
+    {
+      "id": "local",
+      "kind": "ollama",
+      "baseUrl": "http://127.0.0.1:11434"
+    },
+    {
+      "id": "vllm",
+      "kind": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:8000/v1"
+    },
+    {
+      "id": "deepseek",
+      "kind": "openai-compatible",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    {
+      "id": "anthropic",
+      "kind": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    }
+  ],
+  "roles": {
+    "planner": { "endpoint": "deepseek", "model": "deepseek-v4-pro", "temperature": 0 },
+    "worker": { "endpoint": "local", "model": "qwen3:14b", "temperature": 0 },
+    "validator": { "endpoint": "anthropic", "model": "claude-sonnet-4-5", "maxOutputTokens": 4096 },
+    "reporter": { "endpoint": "local", "model": "qwen3:14b" }
+  }
+}

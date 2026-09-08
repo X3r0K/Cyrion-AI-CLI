@@ -8,7 +8,11 @@ import {
   formatEvidenceInspector,
   formatEngagement,
   formatFindingDetail,
+  formatFindings,
   formatMission,
+  formatRootDispatch,
+  formatSwarm,
+  formatTaskBoard,
   formatSettings,
   formatSettingsInspector,
   formatWorkerInspector,
@@ -42,7 +46,7 @@ describe("product terminal state", () => {
       planner: "opencode",
       workers: "opencode",
       provider: "openai/gpt-test (ACTIVE)",
-    }))
+    }, 44))
     expect(output).toContain("HYBRID")
     expect(output).toContain("Root          OPENCODE")
     expect(output).toContain("Workers       OPENCODE")
@@ -167,6 +171,65 @@ describe("product terminal state", () => {
     expect(mission).toContain("fixture.read")
   })
 
+  test("renders the task board as a ruled table with per-task elapsed time", async () => {
+    const snapshot = await completedSnapshot()
+    const board = plainText(formatTaskBoard(snapshot, "T-002", 78))
+    expect(board).toContain("LIVE TASK BOARD")
+    expect(board).toContain("AGENT")
+    expect(board).toContain("ELAPSED")
+    expect(board).toContain("┌")
+    expect(board).toContain("│")
+    expect(board).toMatch(/web-01\s+│/)
+    expect(board).toMatch(/\d\d:\d\d/)
+    expect(board).toContain("Isolated worker")
+  })
+
+  test("renders Root dispatch counters and the last handoff", async () => {
+    const snapshot = await completedSnapshot()
+    const dispatch = plainText(formatRootDispatch(snapshot, "T-002", 34))
+    expect(dispatch).toContain("ROOT DISPATCH")
+    expect(dispatch).toContain("Root owns the plan")
+    expect(dispatch).toContain("LAST HANDOFF")
+    expect(dispatch).toContain("Completed")
+    expect(dispatch).toContain("WORKER")
+  })
+
+  test("renders findings as cards and the inspector as an evidence-linked record", async () => {
+    const snapshot = await completedSnapshot()
+    const list = plainText(formatFindings(snapshot, "F-001", 60))
+    expect(list).toContain("F-001")
+    expect(list).toContain("HIGH")
+    expect(list).toContain("CONFIRMED")
+    expect(list).toContain("┌")
+
+    const detail = plainText(formatFindingDetail(snapshot, "F-001", 34, { mode: "fixture" }))
+    expect(detail).toContain("Environment")
+    expect(detail).toContain("LAB / FIXTURE")
+    expect(detail).toContain("REPRODUCTION PASS")
+    expect(detail).toContain("[e] ")
+    expect(detail).toContain("[r] ")
+  })
+
+  test("renders the swarm tree with role states and worker counts", async () => {
+    const snapshot = await completedSnapshot()
+    const swarm = plainText(formatSwarm(snapshot, "T-004", 30))
+    expect(swarm).toMatch(/root-agent\s+COMPLETE/)
+    expect(swarm).toContain("recon-01")
+    expect(swarm).toContain("validator-01")
+    expect(swarm).toContain("COMPLETE")
+    expect(swarm).toContain("└─")
+    expect(swarm).toMatch(/\d+ active {2}\/ {2}\d+ workers/)
+  })
+
+  test("reports mission activity in plain operator language, never raw payloads", async () => {
+    const snapshot = await completedSnapshot()
+    const mission = plainText(formatMission(snapshot, undefined, 70))
+    expect(mission).toContain("MISSION CONTROL")
+    expect(mission).toContain("ACTIVITY FEED")
+    expect(mission).toContain("Result accepted")
+    expect(mission).not.toContain("TASK / COMPLETED")
+  })
+
   test("renders editable general settings without credential material", () => {
     const state = createSettingsEditor({
       providerID: "opencode",
@@ -176,6 +239,10 @@ describe("product terminal state", () => {
       defaultMode: "autonomous",
       defaultFixture: "known-positive",
       colorMode: "auto",
+      llmKind: "openai-compatible",
+      llmBaseUrl: "",
+      llmModel: "",
+      llmApiKeyEnv: "",
     })
     const display = {
       environmentPath: "/workspace/.env",
@@ -196,7 +263,7 @@ describe("product terminal state", () => {
     expect(settings).toContain("Worker review")
     expect(settings).toContain("KNOWN POSITIVE")
     expect(inspector).toContain("CONNECTED")
-    expect(inspector).toContain("Credentials are managed by OpenCode")
+    expect(collapse(inspector)).toContain("Credentials are managed by OpenCode and never rendered here.")
     expect(`${settings}${inspector}`).not.toContain("API_KEY")
   })
 })
@@ -230,4 +297,8 @@ async function completedSnapshot(withChat = false): Promise<EngagementSnapshot> 
 
 function plainText(value: { chunks: Array<{ text: string }> }): string {
   return value.chunks.map((chunk) => chunk.text).join("")
+}
+
+function collapse(value: string): string {
+  return value.replace(/\s+/g, " ")
 }

@@ -1,0 +1,25 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "validate-poc-reproduction",
+  "name": "Reproduction from a proof bundle",
+  "appliesTo": { "kinds": ["url"], "capabilities": ["http.probe", "poc.run"], "roles": ["validator"] },
+  "objective": "Reproduce a candidate with a bounded proof of concept and keep the bundle that repeats it.",
+  "preconditions": [
+    "A candidate finding exists with evidence and an affected asset",
+    "The manifest grants poc.run, which is off by default and supervised unless the operator opts out"
+  ],
+  "steps": [
+    "Read the candidate record and the artifacts it cites; never the discovering worker's transcript.",
+    "State the claim as a condition a fresh run either meets or does not: the status, headers, or body the record describes.",
+    "Execute that condition as a bounded read against the same approved asset, with the hostname held to the addresses pinned for this engagement.",
+    "Confirm only when every stated condition still holds; reject when one does not; record inconclusive when the run could not decide.",
+    "Keep the bundle — plan, argv, environment, exchanges, and manual steps — so the verdict can be replayed without Cyrion."
+  ],
+  "expectedEvidence": ["response", "poc"],
+  "falsePositives": [
+    "A transient response can look like a fix or a break; prefer inconclusive over a confident wrong verdict.",
+    "A truncated body cannot decide a body condition, and must not be read as a failed reproduction."
+  ],
+  "severity": "info",
+  "references": ["https://owasp.org/www-project-web-security-testing-guide/"]
+}

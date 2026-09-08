@@ -1,0 +1,21 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "api-object-boundary",
+  "name": "Object-level authorization boundary",
+  "source": "API1:2023",
+  "appliesTo": { "kinds": ["url"], "capabilities": ["http.probe"], "roles": ["api"] },
+  "objective": "Check whether an approved object endpoint enforces authorization on each request.",
+  "preconditions": ["The approved scope includes an object endpoint path"],
+  "steps": [
+    "Request the approved object endpoint without any credential and capture the response.",
+    "Compare the response against the endpoint's stated policy: an object that requires authorization must not return content to an unauthenticated request.",
+    "Report a candidate only when the unauthenticated response returns object content rather than a refusal."
+  ],
+  "expectedEvidence": ["response"],
+  "falsePositives": [
+    "A deliberately public endpoint returns content by design; confirm the endpoint's intent before reporting.",
+    "A generic error page returned with status 200 is not object content."
+  ],
+  "severity": "high",
+  "references": ["https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/"]
+}

@@ -12,9 +12,11 @@ import {
   t,
   type KeyEvent,
 } from "@opentui/core"
+import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { EngagementSnapshot, EvidenceRef, EvidenceStore } from "@cyrion/contracts"
 import type { CyrionController } from "@cyrion/controller"
+import { renderMarkdownReport } from "@cyrion/reporting"
 import { inspectOpenCodeProviders, readProviderSelection } from "@cyrion/runtime-opencode"
 import {
   formatCommandHelp,
@@ -23,10 +25,12 @@ import {
   formatEvidenceInspector,
   formatFindingDetail,
   formatFindings,
+  formatHeaderMeta,
   formatMission,
   formatSettings,
   formatSettingsInspector,
   formatSettingsSidebar,
+  formatRootDispatch,
   formatSwarm,
   formatTaskBoard,
   formatWorkerInspector,
@@ -56,9 +60,13 @@ import {
   adjustSetting,
   commitSettingsEditor,
   createSettingsEditor,
+  editSetting,
+  isTextSettingsField,
   moveSettingsSelection,
   revertSettingsEditor,
+  selectedSettingsField,
   settingsAreDirty,
+  valueForField,
 } from "./settings-ui"
 import { theme } from "./theme"
 
@@ -74,6 +82,7 @@ export async function runTui(
   controller: CyrionController,
   evidenceStore: EvidenceStore,
   runtime: RuntimeDisplay = { mode: "fixture" },
+  reportDirectory: string = join(process.cwd(), ".cyrion", "reports"),
 ): Promise<void> {
   const runtimeDisplay = { ...runtime }
   const generalSettings = readGeneralSettings(Bun.env)
@@ -104,16 +113,17 @@ export async function runTui(
   const brand = new TextRenderable(renderer, {
     content: t`${bold(fg(theme.accentBright)("▣  CYRION/AI"))}${fg(theme.dim)("  [ COMMUNITY EDITION ]")}`,
   })
-  const headerMeta = new TextRenderable(renderer, {
-    content: "",
-    fg: theme.muted,
+  const headerMeta = new TextRenderable(renderer, { content: "", fg: theme.muted })
+  const headerEnv = new TextRenderable(renderer, {
+    content: t`${bold(fg(theme.accent)("DEMO / LAB"))}`,
   })
   header.add(brand)
   header.add(headerMeta)
+  header.add(headerEnv)
 
   const tabs = new BoxRenderable(renderer, { height: 3, flexDirection: "row", gap: 1, backgroundColor: theme.background })
   const tabItems = views.map((view, index) => {
-    const box = panel(renderer, { width: "20%", alignItems: "center", justifyContent: "center" })
+    const box = panel(renderer, { flexGrow: 1, flexBasis: 0, alignItems: "center", justifyContent: "center" })
     const label = new TextRenderable(renderer, { content: `[${index + 1}] ${view}`, fg: theme.text })
     box.add(label)
     tabs.add(box)
@@ -127,7 +137,8 @@ export async function runTui(
     backgroundColor: theme.background,
   })
   const left = panel(renderer, { width: "23%", padding: 1, flexDirection: "column" })
-  const leftTitle = new TextRenderable(renderer, { content: "AGENT SWARM:", fg: theme.text })
+  // flexShrink 0: the pane title must survive a tall swarm tree.
+  const leftTitle = new TextRenderable(renderer, { content: "AGENT SWARM:", fg: theme.text, flexShrink: 0 })
   const leftText = new TextRenderable(renderer, { content: "", fg: theme.muted, flexGrow: 1, wrapMode: "word" })
   left.add(leftTitle)
   left.add(leftText)
@@ -279,82 +290,170 @@ export async function runTui(
       })
   }
 
-  const detailForCurrentView = (snapshot: EngagementSnapshot): StyledText => {
-    if (ui.helpVisible) return formatCommandHelp()
-    if (ui.activeView === "SWARM") return formatWorkerInspector(snapshot, ui.selectedTaskId)
-    if (ui.activeView === "FINDINGS") return formatFindingDetail(snapshot, ui.selectedFindingId)
-    if (ui.activeView === "SETTINGS") return formatSettingsInspector(settingsEditor, settingsDisplay)
-    return formatEngagement(snapshot, runtimeDisplay)
+  let notice = runtimeDisplay.notice
+    ? `${sanitizeTerminalText(runtimeDisplay.notice, 200)} — press 5 for Settings`
+    : ""
+  let exporting = false
+
+  /** Writes the Markdown report for the current snapshot next to the local artifacts. */
+  const exportReport = (): void => {
+    if (exporting) return
+    exporting = true
+    const snapshot = controller.snapshot
+    const target = join(reportDirectory, `${snapshot.manifest.id}.md`)
+    notice = "Writing Markdown report…"
+    render()
+    void mkdir(reportDirectory, { recursive: true, mode: 0o700 })
+      .then(() => writeFile(target, renderMarkdownReport(snapshot), { mode: 0o600 }))
+      .then(() => {
+        notice = `Report written to ${sanitizeTerminalText(target, 120)}`
+      })
+      .catch((error: unknown) => {
+        notice = `Report export failed: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error), 120)}`
+      })
+      .finally(() => {
+        exporting = false
+        if (!destroyed) render()
+      })
+  }
+
+  /**
+   * Pane sizing is applied on start and on resize only. Text columns come from
+   * the terminal width rather than a resolved box, so the first frame and every
+   * later frame agree and a rule never overruns its own border.
+   */
+  const paneWidth = (fraction: number): number =>
+    Math.max(12, Math.floor(renderer.width * fraction) - 4)
+
+  let layout = { isWide: true, isNarrow: false, leftWidth: 30, centerWidth: 62, rightWidth: 34 }
+
+  const applyLayout = (): void => {
+    const isWide = renderer.width >= 120
+    const isNarrow = renderer.width < 90
+    // Percentages leave one column for each visible gap so no pane is shrunk.
+    left.visible = !isNarrow
+    right.visible = isWide
+    left.width = isWide ? "22%" : "23%"
+    center.width = isWide ? "52%" : isNarrow ? "100%" : "76%"
+    right.width = isWide ? "24%" : "0%"
+    layout = {
+      isWide,
+      isNarrow,
+      leftWidth: paneWidth(isWide ? 0.22 : 0.23),
+      centerWidth: paneWidth(isWide ? 0.52 : isNarrow ? 1 : 0.76),
+      rightWidth: paneWidth(0.24),
+    }
   }
 
   const render = (): void => {
     const snapshot = controller.snapshot
     ui = reconcileTerminalUiState(ui, snapshot)
-    headerMeta.content = `DEMO / LAB  |  ${snapshot.manifest.id}  |  ${runtimeDisplay.mode.toUpperCase()}  |  LLM ${runtimeDisplay.provider ?? "NOT CONFIGURED"}`
+    headerMeta.content = formatHeaderMeta(snapshot)
     for (const [index, item] of tabItems.entries()) {
       const active = views[index] === ui.activeView
+      const label = `[${index + 1}] ${views[index]}`
       item.box.backgroundColor = active ? theme.accent : theme.panel
       item.box.borderColor = active ? theme.accentBright : theme.border
-      item.label.fg = active ? theme.activeText : theme.muted
+      item.label.content = active
+        ? new StyledText([bold(fg(theme.activeText)(label))])
+        : new StyledText([fg(theme.muted)(label)])
     }
 
     const settingsActive = ui.activeView === "SETTINGS"
+    const { isWide, isNarrow, leftWidth, centerWidth, rightWidth } = layout
+    const help = formatCommandHelp(rightWidth)
+
     leftTitle.content = settingsActive ? "SYSTEM PROFILE:" : "AGENT SWARM:"
     leftText.content = settingsActive
-      ? formatSettingsSidebar(settingsEditor, settingsDisplay, runtimeDisplay)
-      : formatSwarm(snapshot, ui.activeView === "SWARM" ? ui.selectedTaskId : undefined)
-    const isWide = renderer.width >= 120
-    const isNarrow = renderer.width < 90
-    const detail = detailForCurrentView(snapshot)
+      ? formatSettingsSidebar(settingsEditor, settingsDisplay, runtimeDisplay, leftWidth)
+      : formatSwarm(snapshot, ui.activeView === "SWARM" ? ui.selectedTaskId : undefined, leftWidth)
 
     if (ui.activeView === "MISSION") {
-      centerText.content = formatMission(snapshot, runtimeDisplay)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : formatEngagement(snapshot, runtimeDisplay)
+      centerText.content = formatMission(snapshot, runtimeDisplay, centerWidth)
+      rightText.content = ui.helpVisible ? help : formatEngagement(snapshot, runtimeDisplay, rightWidth)
     } else if (ui.activeView === "SWARM") {
+      const board = formatTaskBoard(snapshot, ui.selectedTaskId, centerWidth)
+      const dispatch = formatRootDispatch(snapshot, ui.selectedTaskId, rightWidth)
       centerText.content = isWide
-        ? formatTaskBoard(snapshot, ui.selectedTaskId)
-        : stack(formatTaskBoard(snapshot, ui.selectedTaskId), detail)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : detail
+        ? board
+        : stack(board, formatWorkerInspector(snapshot, ui.selectedTaskId, centerWidth))
+      rightText.content = ui.helpVisible ? help : dispatch
     } else if (ui.activeView === "FINDINGS") {
+      const list = formatFindings(snapshot, ui.selectedFindingId, centerWidth)
+      const detail = formatFindingDetail(snapshot, ui.selectedFindingId, rightWidth, runtimeDisplay)
       centerText.content = isWide
-        ? formatFindings(snapshot, ui.selectedFindingId)
-        : stack(formatFindings(snapshot, ui.selectedFindingId), detail)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : detail
+        ? list
+        : stack(list, formatFindingDetail(snapshot, ui.selectedFindingId, centerWidth, runtimeDisplay))
+      rightText.content = ui.helpVisible ? help : detail
     } else if (ui.activeView === "EVIDENCE") {
       const reference = selectedEvidence(ui, snapshot)
       requestPreview(reference)
-      const evidenceDetail = formatEvidenceInspector(snapshot, ui.selectedEvidenceId, preview.content, preview.verification)
+      const index = formatEvidence(snapshot, ui.selectedEvidenceId, centerWidth)
+      const detail = formatEvidenceInspector(
+        snapshot,
+        ui.selectedEvidenceId,
+        preview.content,
+        preview.verification,
+        rightWidth,
+      )
       centerText.content = isWide
-        ? formatEvidence(snapshot, ui.selectedEvidenceId)
-        : stack(formatEvidence(snapshot, ui.selectedEvidenceId), evidenceDetail)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : evidenceDetail
+        ? index
+        : stack(index, formatEvidenceInspector(
+          snapshot,
+          ui.selectedEvidenceId,
+          preview.content,
+          preview.verification,
+          centerWidth,
+        ))
+      rightText.content = ui.helpVisible ? help : detail
     } else {
-      const settingsDetail = formatSettingsInspector(settingsEditor, settingsDisplay)
+      const editor = formatSettings(settingsEditor, settingsDisplay, centerWidth)
+      const detail = formatSettingsInspector(settingsEditor, settingsDisplay, rightWidth)
       centerText.content = isWide
-        ? formatSettings(settingsEditor, settingsDisplay)
-        : stack(formatSettings(settingsEditor, settingsDisplay), settingsDetail)
-      rightText.content = ui.helpVisible ? formatCommandHelp() : settingsDetail
+        ? editor
+        : stack(editor, formatSettingsInspector(settingsEditor, settingsDisplay, centerWidth))
+      rightText.content = ui.helpVisible ? help : detail
     }
 
-    if (!isWide && ui.helpVisible) centerText.content = formatCommandHelp()
+    if (!isWide && ui.helpVisible) centerText.content = formatCommandHelp(centerWidth)
 
-    left.visible = !isNarrow
-    right.visible = isWide
-    center.width = isWide ? "53%" : isNarrow ? "100%" : "76%"
     headerMeta.visible = renderer.width >= 100
+    headerEnv.visible = renderer.width >= 80
     shortcutText.visible = renderer.width >= 98
-    shortcutText.content = ui.inputMode === "chat"
-      ? "[Enter] Send  [Esc/Tab] Navigate"
-      : settingsActive
-        ? "[↑↓] Field  [←→] Change  [s] Save  [r] Revert  [d] Discover  [q] Quit"
-      : snapshot.pendingApproval?.status === "pending"
-        ? "[a] Approve  [x] Deny  [?] Details  [q] Quit"
-        : "[↑↓] Select  [Enter] Inspect  [i] Chat  [p] Pause  [?] Help  [q] Quit"
-    prompt.content = ui.inputMode === "chat" ? "root >" : settingsActive ? "set  >" : "nav  >"
-    prompt.fg = ui.inputMode === "chat" ? theme.accent : settingsActive ? theme.accentBright : theme.warning
-    input.placeholder = ui.inputMode === "chat"
+    shortcutText.content = notice
+      ? new StyledText([fg(theme.accentBright)(notice)])
+      : new StyledText([fg(theme.muted)(shortcutHint(ui, snapshot, settingsActive))])
+    prompt.content = ui.inputMode === "chat" ? "root >" : settingsActive ? "set  >" : "root >"
+    prompt.fg = ui.inputMode === "chat" ? theme.accentBright : settingsActive ? theme.warning : theme.accent
+    input.placeholder = ui.inputMode === "setting"
+      ? "Type a value, Enter to apply, Escape to cancel"
+      : ui.inputMode === "chat"
       ? "Ask Root for a concise mission summary"
       : settingsActive ? "Use arrows to edit; press s to save" : "Press i to ask Root about this mission"
+  }
+
+  const beginSettingEdit = (): void => {
+    const field = selectedSettingsField(settingsEditor)
+    if (!isTextSettingsField(field)) return
+    input.value = valueForField(settingsEditor.draft, field)
+    ui = { ...ui, inputMode: "setting", helpVisible: false }
+    input.focus()
+    settingsDisplay = { ...settingsDisplay, message: "Type a value, then press Enter to apply or Escape to cancel." }
+    render()
+  }
+
+  const endSettingEdit = (apply: boolean): void => {
+    const field = selectedSettingsField(settingsEditor)
+    if (apply && isTextSettingsField(field)) {
+      settingsEditor = editSetting(settingsEditor, field, input.value)
+      settingsDisplay = { ...settingsDisplay, message: "Draft updated. Press s to save or r to revert." }
+    } else if (!apply) {
+      settingsDisplay = { ...settingsDisplay, message: "Edit cancelled; the draft is unchanged." }
+    }
+    input.value = ""
+    ui = { ...ui, inputMode: "dashboard" }
+    input.blur()
+    render()
   }
 
   const setChatMode = (enabled: boolean): void => {
@@ -365,6 +464,10 @@ export async function runTui(
   }
 
   input.on(InputRenderableEvents.ENTER, () => {
+    if (ui.inputMode === "setting") {
+      endSettingEdit(true)
+      return
+    }
     const value = input.value.trim()
     if (value) controller.operatorMessage(value)
     input.value = ""
@@ -382,11 +485,13 @@ export async function runTui(
   })
 
   const onKeyPress = (key: KeyEvent): void => {
+    if (notice && key.name !== "r") notice = ""
     if (isTextInputActive(ui.inputMode, input.focused)) {
       if (key.name === "escape" || key.name === "tab") {
         key.preventDefault()
         key.stopPropagation()
-        setChatMode(false)
+        if (ui.inputMode === "setting") endSettingEdit(false)
+        else setChatMode(false)
       }
       return
     }
@@ -469,6 +574,12 @@ export async function runTui(
       render()
       return
     }
+    if (ui.activeView === "SETTINGS" && key.name === "return" && isTextSettingsField(selectedSettingsField(settingsEditor))) {
+      key.preventDefault()
+      key.stopPropagation()
+      beginSettingEdit()
+      return
+    }
     if (ui.activeView === "SETTINGS" && key.name === "return") {
       const previous = settingsEditor
       settingsEditor = adjustSetting(settingsEditor, settingsDisplay.providers, 1)
@@ -510,6 +621,12 @@ export async function runTui(
       render()
       return
     }
+    if (key.name === "r") {
+      key.preventDefault()
+      key.stopPropagation()
+      exportReport()
+      return
+    }
     if (key.name === "p") {
       controller.snapshot.status === "paused" ? controller.resume() : controller.pause()
       key.preventDefault()
@@ -520,7 +637,10 @@ export async function runTui(
     if (key.name === "q") renderer.destroy()
   }
   renderer.keyInput.on("keypress", onKeyPress)
-  renderer.on(CliRenderEvents.RESIZE, render)
+  renderer.on(CliRenderEvents.RESIZE, () => {
+    applyLayout()
+    render()
+  })
   let unsubscribe = (): void => {}
   const rendererDestroyed = new Promise<void>((resolve) => {
     renderer.once(CliRenderEvents.DESTROY, () => {
@@ -532,11 +652,19 @@ export async function runTui(
   })
   unsubscribe = controller.events.subscribe(render)
   input.blur()
+  applyLayout()
   render()
   const run = controller.run()
   await rendererDestroyed
   await controller.cancel()
   await run
+}
+
+function shortcutHint(ui: TerminalUiState, snapshot: EngagementSnapshot, settingsActive: boolean): string {
+  if (ui.inputMode === "chat") return "[Enter] Send   [Esc/Tab] Navigate"
+  if (settingsActive) return "[↑↓] Field  [←→] Change  [s] Save  [r] Revert  [d] Discover  [q] Quit"
+  if (snapshot.pendingApproval?.status === "pending") return "[a] Approve  [x] Deny  [?] Details  [q] Quit"
+  return "[Tab] Focus  [Enter] Inspect  [r] Report  [p] Pause  [Ctrl+K] Commands  [q] Quit"
 }
 
 function panel(

@@ -1,0 +1,26 @@
+{
+  "id": "ENG-LAB",
+  "name": "Controlled lab assessment",
+  "objective": "Assess the approved lab surface and validate every candidate.",
+  "profile": "web-api",
+  "mode": "autonomous",
+  "scope": {
+    "targets": [
+      "http://127.0.0.1:8123/",
+      "http://127.0.0.1:8123/api/objects/42",
+      "http://127.0.0.1:8123/api/private/9",
+      "http://127.0.0.1:8123/hardened"
+    ],
+    "excluded": [],
+    "capabilities": ["dns.lookup", "http.probe"]
+  },
+  "budgets": {
+    "maxConcurrentAgents": 3,
+    "maxAgents": 40,
+    "maxDepth": 3,
+    "maxTasks": 40,
+    "maxDurationMs": 300000,
+    "maxTokens": 100000,
+    "maxCostUsd": 1
+  }
+}

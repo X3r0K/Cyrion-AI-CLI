@@ -8,6 +8,10 @@
         "@opencode-ai/sdk": "1.18.29",
         "@opentui/core": "0.5.10",
       },
+      "devDependencies": {
+        "@types/bun": "1.4.1",
+        "typescript": "5.9.2",
+      },
       "optionalDependencies": {
         "@opentui/core-darwin-arm64": "0.5.10",
         "@opentui/core-darwin-x64": "0.5.10",
@@ -18,10 +22,6 @@
         "@opentui/core-win32-arm64": "0.5.10",
         "@opentui/core-win32-x64": "0.5.10",
       },
-      "devDependencies": {
-        "@types/bun": "1.4.1",
-        "typescript": "5.9.2",
-      },
     },
     "apps/cli": {
       "name": "@cyrion/cli",
@@ -30,12 +30,38 @@
         "cyrion": "./src/index.ts",
       },
       "dependencies": {
+        "@cyrion/assessment": "workspace:*",
+        "@cyrion/capabilities": "workspace:*",
         "@cyrion/contracts": "workspace:*",
         "@cyrion/controller": "workspace:*",
         "@cyrion/evidence": "workspace:*",
+        "@cyrion/llm": "workspace:*",
+        "@cyrion/mcp": "workspace:*",
         "@cyrion/reporting": "workspace:*",
         "@cyrion/runtime-opencode": "workspace:*",
+        "@cyrion/sandbox": "workspace:*",
+        "@cyrion/scope": "workspace:*",
+        "@cyrion/skills": "workspace:*",
         "@opentui/core": "0.5.10",
+      },
+    },
+    "packages/assessment": {
+      "name": "@cyrion/assessment",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/capabilities": "workspace:*",
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/scope": "workspace:*",
+        "@cyrion/skills": "workspace:*",
+      },
+    },
+    "packages/capabilities": {
+      "name": "@cyrion/capabilities",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/sandbox": "workspace:*",
+        "@cyrion/scope": "workspace:*",
       },
     },
     "packages/contracts": {
@@ -48,6 +74,7 @@
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
         "@cyrion/evidence": "workspace:*",
+        "@cyrion/scope": "workspace:*",
       },
     },
     "packages/evidence": {
@@ -57,11 +84,27 @@
         "@cyrion/contracts": "workspace:*",
       },
     },
+    "packages/llm": {
+      "name": "@cyrion/llm",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
+    "packages/mcp": {
+      "name": "@cyrion/mcp",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/reporting": "workspace:*",
+      },
+    },
     "packages/reporting": {
       "name": "@cyrion/reporting",
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
+        "@cyrion/scope": "workspace:*",
       },
     },
     "packages/runtime-opencode": {
@@ -72,8 +115,34 @@
         "@opencode-ai/sdk": "1.18.29",
       },
     },
+    "packages/sandbox": {
+      "name": "@cyrion/sandbox",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/scope": "workspace:*",
+      },
+    },
+    "packages/scope": {
+      "name": "@cyrion/scope",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
+    "packages/skills": {
+      "name": "@cyrion/skills",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
   },
   "packages": {
+    "@cyrion/assessment": ["@cyrion/assessment@workspace:packages/assessment"],
+
+    "@cyrion/capabilities": ["@cyrion/capabilities@workspace:packages/capabilities"],
+
     "@cyrion/cli": ["@cyrion/cli@workspace:apps/cli"],
 
     "@cyrion/contracts": ["@cyrion/contracts@workspace:packages/contracts"],
@@ -82,9 +151,19 @@
 
     "@cyrion/evidence": ["@cyrion/evidence@workspace:packages/evidence"],
 
+    "@cyrion/llm": ["@cyrion/llm@workspace:packages/llm"],
+
+    "@cyrion/mcp": ["@cyrion/mcp@workspace:packages/mcp"],
+
     "@cyrion/reporting": ["@cyrion/reporting@workspace:packages/reporting"],
 
     "@cyrion/runtime-opencode": ["@cyrion/runtime-opencode@workspace:packages/runtime-opencode"],
+
+    "@cyrion/sandbox": ["@cyrion/sandbox@workspace:packages/sandbox"],
+
+    "@cyrion/scope": ["@cyrion/scope@workspace:packages/scope"],
+
+    "@cyrion/skills": ["@cyrion/skills@workspace:packages/skills"],
 
     "@opencode-ai/sdk": ["@opencode-ai/sdk@1.18.29", "", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-4CS+FoLPkymTlcga8jxivGDDb2AbWMIIl3b8+myoe2wtv/1ANYCErslgz1xy5hTVHymWE6CtVNKzRuPU0ED57A=="],
 

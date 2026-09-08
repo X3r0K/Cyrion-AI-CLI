@@ -176,7 +176,9 @@ describe("supervised delegation", () => {
     expect(result.tasks).toHaveLength(0)
     expect(result.pendingApproval).toBeUndefined()
     expect(result.events.find((event) => event.type === "root.decision.rejected")?.payload)
-      .toEqual(expect.objectContaining({ rejection: "Out-of-scope target: outside.example" }))
+      .toEqual(expect.objectContaining({
+        rejection: "Out-of-scope target: outside.example (target is not covered by the approved scope)",
+      }))
     controller.close()
   })
 

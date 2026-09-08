@@ -46,7 +46,8 @@ from the providers and models OpenCode reports as connected.
 
 Use `bun run demo:headless` in CI or a non-interactive shell. The live terminal
 supports `1`–`5` to switch views, arrows or `j`/`k` to select rows, `Enter` to
-inspect, `i` to focus Root chat, `p` to pause/resume dispatch, and `q` to quit.
+inspect, `i` to focus Root chat, `r` to export the Markdown report, `p` to
+pause/resume dispatch, and `q` to quit.
 The fifth view edits provider, Root planner, worker review, and general settings: use
 left/right to change a value, `s` to save, `r` to revert, and `d` to refresh
 OpenCode discovery. If work is still active, `q` cancels the leased workers
@@ -78,6 +79,8 @@ bun run demo:headless --fixture incomplete
 ```
 
 Evidence and report artifacts are written under `.cyrion/artifacts` by default.
+A demo directory left by an earlier release is replaced automatically; `--fresh`
+forces a clean run at any time.
 Use `--artifacts <directory>` to select another location. Every artifact has a
 separate metadata record. Before accepting a worker result, the controller
 requires that record to exist, match the returned reference exactly, and pass
@@ -95,15 +98,170 @@ bun apps/cli/src/index.ts report ENG-0042 --state .cyrion/community.sqlite --for
 `markdown` and `json` and include normalized findings and evidence metadata,
 but deliberately omit artifact bodies.
 
+## Running an assessment
+
+`cyrion engage` runs the real loop against an approved scope: recon, one task
+per applicable skill and target, independent validation of every candidate, then
+a report — all under the same controller enforcement the fixtures had.
+
+```sh
+bun fixtures/lab/server.ts &          # a controlled target with two findable issues
+cyrion engage --scope fixtures/lab/engagement.json --sandbox local --headless
+```
+
+Findings start as candidates. Only a validator moves one to confirmed, rejected,
+or inconclusive, working from the finding record rather than the discovering
+worker's transcript, and only with fresh evidence it captured itself. When the
+target stops reproducing a candidate, the verdict is `rejected` — a test proves
+this by hardening the lab between discovery and validation.
+
+Methodology lives in `skills/*.skill.json`: reviewable units with an objective,
+steps, expected evidence, and the false positives that would make the claim
+wrong. Each task and finding records the skill that produced it. See
+[Running an assessment](docs/ASSESSMENT-WORKFLOW.md).
+
+## Proof, not just a claim
+
+Grant `poc.run` and every candidate is validated by a bounded reproduction whose
+bundle is kept: the plan, the exact argv, the pinned addresses, the raw
+exchanges, and a `REPRO.md` ending in a shell script that runs anywhere `curl`
+does.
+
+```sh
+cyrion engage --scope engagement.json --sandbox local        # supervised while poc.run is granted
+cyrion replay F-OBJECT-a845c387 --manifest engagement.json   # exits non-zero if it no longer reproduces
+```
+
+A proof of concept is a validated plan, never a script a model wrote: reads
+only, no request body, no credential headers, at most eight rate-limited steps,
+redirects refused, and every step re-checked against the approved scope. The
+verdict has three values — `reproduced`, `not-reproduced`, `inconclusive` — and
+reproducibility is recorded separately from severity, so a confirmed finding
+without a bundle is reported as exactly that. See
+[Proof of concept and replay](docs/POC-VALIDATION.md).
+
+## Where capabilities run
+
+Two execution modes, and Cyrion picks a sensible default for your machine:
+
+```sh
+cyrion tools                 # what this machine can already do, and how to install the rest
+cyrion probe --capability http.probe --target https://app.lab.test --manifest engagement.json
+```
+
+**Local mode** runs tools directly on your machine — what a Kali or Parrot user
+usually wants, since the toolchain is already installed. It keeps the capability
+allowlist, adapter-built argv, a scrubbed environment, a private working
+directory, output and time ceilings, and process-group termination; it does not
+pretend to give you filesystem or network isolation, and `cyrion tools` says so.
+
+**Container mode** runs one hardened container per engagement: unprivileged,
+read-only root, no host mounts, all capabilities dropped, and a default-DROP
+egress allowlist installed into the container's own network namespace from the
+host — which a process inside, without `NET_ADMIN`, cannot remove. If that
+allowlist cannot be installed, Cyrion refuses to start rather than running
+unfiltered.
+
+Several capabilities are implemented inside Cyrion and need nothing installed,
+so local mode works on a bare machine. For the rest, `cyrion tools` prints the
+exact install command for your package manager — and never runs it for you.
+See [Where capabilities run](docs/SANDBOX.md).
+
+## Reports and CI gating
+
+One record, six formats — Markdown, JSON, HTML, SARIF, JUnit, and CSV — so the
+report a client reads and the dashboard a pipeline gates on cannot disagree:
+
+```sh
+cyrion ci --scope engagement.json --fail-on high --formats markdown,html,sarif,junit
+```
+
+The gate counts confirmed findings only; reports are written before the exit
+code is decided. Every report states the scope hash and attestation, the skills
+that produced each finding, budgets granted against consumed, and
+reproducibility recorded separately from severity. See
+[Reports and CI gating](docs/REPORTING.md).
+
+## MCP, in both directions
+
+```sh
+cyrion mcp serve --state .cyrion/engagement.sqlite --engagement ENG-1042
+cyrion mcp list --manifest engagement.json
+```
+
+As a server, Cyrion exposes an engagement to another agent read-only —
+`start_engagement` is refused at the protocol level, and artifact text is
+withheld when it no longer matches its digest. As a client, `mcp.json` declares
+approved servers with an explicit tool allowlist mapped to capability names the
+manifest must already grant. See [MCP, in both directions](docs/MCP.md).
+
+## Targets and scope
+
+Scope is enforced by the controller, not by prompt text. Targets are typed
+expressions — hosts, CIDR ranges with ports, URLs with path prefixes, and
+repository roots — and exclusions always win:
+
+```sh
+cyrion scope check --manifest engagement.json --target 10.10.0.9
+cyrion scope lock  --manifest engagement.json --attest "Authorized by …, ticket SEC-1042"
+cyrion demo --scope-lock scope.lock
+```
+
+A lock binds an operator attestation to one exact scope; the controller refuses
+to start when the scope has since changed. Redirect and DNS-pinning checks live
+in the same engine, so a rebinding answer or an out-of-scope hop is refused
+rather than followed. See [Targets and scope](docs/SCOPE.md).
+
+## Model providers
+
+Provider access is not tied to one vendor or one SDK. Point Cyrion at a hosted
+API or at a model served on your own hardware:
+
+```sh
+export CYRION_LLM_BASE_URL=http://127.0.0.1:11434
+export CYRION_LLM_MODEL=qwen3:14b
+export CYRION_LLM_KIND=ollama
+bun run apps/cli/src/index.ts models --check
+bun run apps/cli/src/index.ts demo --planner llm --workers llm
+```
+
+Nothing needs to be configured before Cyrion starts. Launch it, press **5** for
+Settings, and fill in the endpoint URL, model, and — for a hosted API — the name
+of the variable holding your key. A saved runtime that is missing or unreachable
+never blocks the terminal: Cyrion runs the deterministic runtime, says why, and
+leaves the page that fixes it one keystroke away.
+
+`--planner llm` lets the provider review each controller-generated transition;
+`--planner llm-author` lets it propose transitions, which the controller still
+validates field by field before dispatch. Local inference reports zero cost, and
+token, time, and task budgets apply either way. See [Models](docs/MODELS.md) for
+endpoint kinds, role routing, the structured-output ladder, and readiness
+checks.
+
 ## Packages
 
 - `apps/cli` — Cyrion terminal application.
 - `packages/contracts` — public, versioned engagement/task/event contracts.
 - `packages/controller` — Root decision loop, scheduler, SQLite state, leases,
   budgets, and the scope-bound tool gateway.
-- `packages/evidence` — local artifact persistence, metadata, hashing, and
-  integrity verification.
-- `packages/reporting` — versioned Markdown and JSON report generation.
+- `packages/evidence` — local artifact persistence, metadata, hashing,
+  integrity verification, and bounded provider previews.
+- `packages/llm` — provider-agnostic model clients, role routing, structured
+  output, and guarded reviewers.
+- `packages/scope` — typed target expressions, the scope decision engine,
+  DNS pinning, redirect policy, and the operator scope lock.
+- `packages/sandbox` — local and container execution, host and tool detection,
+  and the container egress allowlist.
+- `packages/capabilities` — typed capability adapters that build argv, enforce
+  scope, and capture hashed evidence.
+- `packages/skills` — the methodology format, loader, and applicability rules.
+- `packages/assessment` — the skill-driven planner and the capability-backed
+  workers.
+- `packages/reporting` — one versioned report record rendered as Markdown, JSON,
+  HTML, SARIF, JUnit, and CSV, with reproducibility recorded apart from severity
+  and a gate for CI.
+- `packages/mcp` — JSON-RPC transport, the read-only engagement server, and the
+  allowlisted client for operator-approved MCP servers.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
 - `workers` — credential-scrubbed subprocess entrypoints for safe fixture capabilities.
 - `agents` — intentionally concise public role prompts.
@@ -116,8 +274,9 @@ See [Architecture](docs/ARCHITECTURE.md) and the
 
 Only assess systems you own or are explicitly authorized to test. The
 controller—not a model prompt—enforces target scope, capability grants,
-concurrency, depth, and budgets. This alpha ships fixture workers only; real
-network tooling requires an isolated worker adapter and explicit scope policy.
+concurrency, depth, and budgets. Real capabilities run only where the manifest
+grants them, in the sandbox you chose; `poc.run` is off unless it is granted and
+supervised unless you opt out in as many words.
 
 See [Controller and execution](docs/CONTROLLER.md) for the durable-state and
 tool-gateway guarantees and their current limitations.
@@ -133,5 +292,8 @@ See [Untrusted output boundary](docs/OUTPUT-BOUNDARY.md) for runtime contract,
 provenance, and finding-transition enforcement.
 See [Evidence admission](docs/EVIDENCE-ADMISSION.md) for canonical metadata,
 integrity checks, and recovery-time artifact validation.
+See [Proof of concept and replay](docs/POC-VALIDATION.md) for the PoC contract,
+bundle format, verdicts, and `cyrion replay`.
+
 See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
 headless safeguards, audit events, and restart behavior.

@@ -1,0 +1,18 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "recon-surface-inventory",
+  "name": "Approved surface inventory",
+  "source": "WSTG-INFO",
+  "appliesTo": { "kinds": ["url", "host"], "capabilities": ["dns.lookup", "http.probe"], "roles": ["recon"] },
+  "objective": "Inventory the approved surface and pin the addresses it answers from.",
+  "preconditions": ["The target appears in the approved scope"],
+  "steps": [
+    "Resolve the target and pin every address it returns.",
+    "Request the origin once and record status, headers, and server identity.",
+    "Record each observation against the asset it came from, with its evidence reference."
+  ],
+  "expectedEvidence": ["response", "log"],
+  "falsePositives": ["A shared host may answer for names outside this engagement; record only the approved asset."],
+  "severity": "info",
+  "references": ["https://owasp.org/www-project-web-security-testing-guide/"]
+}

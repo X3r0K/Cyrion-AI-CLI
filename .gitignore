@@ -7,3 +7,4 @@ release/
 coverage/
 .cyrion/
 *.log
+cyrion.models.json

@@ -1,0 +1,21 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "web-security-headers",
+  "name": "Transport and browser protection headers",
+  "source": "WSTG-CONF-12",
+  "appliesTo": { "kinds": ["url"], "capabilities": ["http.probe"], "roles": ["web"] },
+  "objective": "Check whether the approved origin sets the browser protections its responses depend on.",
+  "preconditions": ["The origin returns an HTML response"],
+  "steps": [
+    "Request the approved origin and capture the full response as evidence.",
+    "Record which of content-security-policy, x-content-type-options, x-frame-options, referrer-policy, and strict-transport-security are absent.",
+    "Report one candidate naming the absent headers; do not report a candidate when every header is present."
+  ],
+  "expectedEvidence": ["response"],
+  "falsePositives": [
+    "An API that never returns HTML does not need frame protections.",
+    "A proxy in front of the origin may add headers that a direct request does not show."
+  ],
+  "severity": "low",
+  "references": ["https://owasp.org/www-project-secure-headers/"]
+}

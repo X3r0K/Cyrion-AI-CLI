@@ -102,7 +102,10 @@ export class LocalEvidenceStore implements EvidenceStore {
       const artifact = await readFile(artifactPath)
       const actualHash = createHash("sha256").update(artifact).digest("hex")
       if (metadata.sha256 !== expectedHash || actualHash !== expectedHash) {
-        throw new Error(`Evidence ID ${metadata.id} already exists with different content`)
+        throw new Error(
+          `Evidence ID ${metadata.id} already exists with different content at ${artifactPath}. `
+          + "Remove that engagement artifact directory or run with a different --artifacts location.",
+        )
       }
       return metadata
     } catch (error) {
@@ -181,3 +184,5 @@ function extensionFor(contentType: string): string {
   if (contentType === "text/markdown") return "md"
   return "txt"
 }
+
+export * from "./review-preview"
