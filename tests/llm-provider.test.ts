@@ -10,6 +10,7 @@ import {
   probeReadiness,
   readEnvironmentConfig,
   redact,
+  unsupportedRequest,
   type ModelConfig,
   type ModelEndpoint,
 } from "@cyrion/llm"
@@ -428,6 +429,135 @@ describe("structured output ladder", () => {
     }
   })
 
+  test("spends one budget across every mode, not one budget per mode", async () => {
+    // A server that never answers: without a shared budget the five rungs would
+    // each wait the full timeout, holding one decision for five times as long.
+    const server = Bun.serve({ port: 0, async fetch(request) {
+      if (new URL(request.url).pathname.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      await Bun.sleep(30_000)
+      return json({})
+    } })
+    try {
+      const client = new OpenAiCompatibleClient({
+        endpoint: { id: "slow", kind: "openai-compatible", baseUrl: `http://127.0.0.1:${server.port}` },
+        model: "m",
+      })
+      const started = Date.now()
+      await expect(client.complete({ system: "s", input: "i", schema, timeoutMs: 3_000 }))
+        .rejects.toThrow(/No structured output mode succeeded/)
+      const elapsed = Date.now() - started
+      expect(elapsed).toBeLessThan(9_000)
+      expect(elapsed).toBeGreaterThanOrEqual(2_500)
+    } finally {
+      server.stop(true)
+    }
+  }, 30_000)
+
+  test("earns one retry with a wider ceiling when the answer was cut off", () => {
+    const ceilings: number[] = []
+    const fake = serve((path, body) => {
+      if (path.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      ceilings.push(body.max_tokens)
+      // A reasoning model spends the budget thinking, then runs out mid-answer.
+      if (ceilings.length === 1) {
+        return json({ choices: [{ finish_reason: "length", message: { content: '{"verd' } }] })
+      }
+      return json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ verdict: "accept" }) } }] })
+    })
+    return (async () => {
+      try {
+        const client = new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m" })
+        const response = await client.complete({ system: "s", input: "i", schema, maxOutputTokens: 2_048 })
+        expect(response.structured).toEqual({ verdict: "accept" })
+        // Same mode, wider ceiling — not a fall through to a weaker mode.
+        expect(ceilings).toEqual([2_048, 8_192])
+        expect(response.mode).toBe("json-schema")
+      } finally {
+        fake.stop()
+      }
+    })()
+  })
+
+  test("never widens past the operator's own ceiling", async () => {
+    const ceilings: number[] = []
+    const fake = serve((path, body) => {
+      if (path.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      ceilings.push(body.max_tokens)
+      return json({ choices: [{ finish_reason: "length", message: { content: "{" } }] })
+    })
+    try {
+      const client = new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m", maxOutputTokens: 3_000 })
+      await expect(client.complete({ system: "s", input: "i", schema, maxOutputTokens: 2_048 }))
+        .rejects.toThrow(/cut off at the output ceiling/)
+      // The retry asked for more, and the binding clamped it back down.
+      expect(Math.max(...ceilings)).toBe(3_000)
+    } finally {
+      fake.stop()
+    }
+  })
+
+  test("retires a mode only for capability language, not for any client error", () => {
+    // What DeepSeek actually answered, and what a thinking model answered.
+    expect(unsupportedRequest(400, "This response_format type is unavailable now")).toBe(true)
+    expect(unsupportedRequest(400, "Thinking mode does not support this tool_choice")).toBe(true)
+    // A 400 that says nothing about capability must stay retryable: every one
+    // of these APIs labels its client errors invalid_request_error.
+    expect(unsupportedRequest(400, '{"type":"invalid_request_error","message":"prompt is too long"}')).toBe(false)
+    expect(unsupportedRequest(429, "rate limit exceeded")).toBe(false)
+    expect(unsupportedRequest(503, "service unavailable")).toBe(false)
+  })
+
+  test("takes the tighter of the binding ceiling and the request ceiling", async () => {
+    const fake = serve((path, body) => {
+      if (path.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      return json({ choices: [{ message: { content: JSON.stringify({ verdict: "accept" }) } }] })
+    })
+    try {
+      // The operator's binding is tighter than the caller's task ceiling.
+      const bound = new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m", maxOutputTokens: 512 })
+      await bound.complete({ system: "s", input: "i", schema, maxOutputTokens: 2_048 })
+      expect(fake.requests.at(-1)!.body.max_tokens).toBe(512)
+
+      // And the other way round: a caller cannot widen what the operator allowed.
+      const loose = new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m", maxOutputTokens: 4_096 })
+      await loose.complete({ system: "s", input: "i", schema, maxOutputTokens: 1_024 })
+      expect(fake.requests.at(-1)!.body.max_tokens).toBe(1_024)
+    } finally {
+      fake.stop()
+    }
+  })
+
+  test("stops re-asking for a mode the endpoint said it cannot serve", async () => {
+    const attempts: string[] = []
+    const fake = serve((path, body) => {
+      if (path.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      if (body?.response_format?.type === "json_schema") {
+        attempts.push("json-schema")
+        return json({ error: { message: "This response_format type is unavailable now" } }, 400)
+      }
+      if (body?.tools) {
+        attempts.push("tool-call")
+        return json({ error: { message: "Thinking mode does not support this tool_choice" } }, 400)
+      }
+      attempts.push(body?.guided_json ? "guided-json" : "other")
+      return json({ choices: [{ message: { content: JSON.stringify({ verdict: "accept" }) } }] })
+    })
+    try {
+      const client = new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m" })
+      await client.complete({ system: "s", input: "i", schema })
+      expect(attempts).toEqual(["json-schema", "guided-json"])
+      expect(client.unsupportedModes).toEqual(["json-schema"])
+
+      // The second request goes straight to the mode that worked; the refused
+      // one is never asked for again.
+      attempts.length = 0
+      await client.complete({ system: "s", input: "i", schema })
+      expect(attempts).toEqual(["guided-json"])
+    } finally {
+      fake.stop()
+    }
+  })
+
   test("readiness is decided by the endpoints roles bind to, not by the whole file", async () => {
     const fake = serveIgnoringSchema(true)
     try {
@@ -447,6 +577,45 @@ describe("structured output ladder", () => {
       // Bind a role to it and the same endpoint now decides readiness.
       config.roles.worker = { endpoint: "spare", model: "m" }
       expect((await probeReadiness(config, {})).ready).toBe(false)
+    } finally {
+      fake.stop()
+    }
+  })
+})
+
+describe("guarded review prompt", () => {
+  test("tells the reviewer what the controller already enforces, so it does not stop sound transitions", async () => {
+    const fake = serve((path) => {
+      if (path.endsWith("/models")) return json({ data: [{ id: "m" }] })
+      return json({ choices: [{ message: { content: JSON.stringify({ verdict: "accept", rationale: "ok" }) } }] })
+    })
+    try {
+      const reviewer = new LlmRootReviewer(
+        new OpenAiCompatibleClient({ endpoint: fake.endpoint, model: "m" }),
+        "root prompt",
+      )
+      await reviewer.review({
+        manifest: {
+          id: "ENG-PROMPT", name: "t", objective: "o", profile: "web-api", mode: "autonomous",
+          scope: { targets: ["demo.lab.test"], excluded: [], capabilities: ["fixture.read"] },
+          budgets: {
+            maxConcurrentAgents: 3, maxAgents: 40, maxDepth: 3, maxTasks: 40,
+            maxDurationMs: 1000, maxTokens: 10, maxCostUsd: 1,
+          },
+        },
+        status: "running", agents: [], tasks: [], findings: [], evidence: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, events: [],
+      } as unknown as EngagementSnapshot, {
+        version: CONTRACT_VERSION,
+        action: { kind: "finish", rationale: "done" },
+      } as RootDecision)
+
+      const sent = String(fake.requests.at(-1)!.body.messages[1].content)
+      // A live run stopped an authorized engagement by reading a batch size as a
+      // queue limit, so the prompt has to say which limits it does not own.
+      expect(sent).toContain("maxConcurrentAgents is a batch size, not a queue limit")
+      expect(sent).toContain("ALREADY validated this transition deterministically")
+      expect(sent).toContain("When in doubt, accept")
     } finally {
       fake.stop()
     }

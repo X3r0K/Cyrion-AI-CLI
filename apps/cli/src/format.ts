@@ -12,6 +12,17 @@ import type {
 import { scopeHash } from "@cyrion/scope"
 import type { ProviderSummary } from "@cyrion/runtime-opencode"
 import {
+  applicableCapabilities,
+  scanCapabilities,
+} from "./scan-config"
+import {
+  launchFields,
+  launchReadiness,
+  selectedLaunchField,
+  type LaunchField,
+  type LaunchState,
+} from "./launch-ui"
+import {
   llmEndpointConfigured,
   selectedSettingsField,
   settingsAreDirty,
@@ -439,6 +450,86 @@ export function formatCommandHelp(width = SIDE_WIDTH): StyledText {
   appendLine(chunks, [success("■ LOCAL ARTIFACTS")])
   appendLine(chunks, [warning("◇ FIXTURE WORKERS ONLY")], false)
   return new StyledText(chunks)
+}
+
+/**
+ * The launch form: everything a scan needs, on one screen.
+ *
+ * Authorization is a field like any other, because it is a decision the
+ * operator makes rather than a formality the tool assumes.
+ */
+export function formatLaunch(state: LaunchState, width = MAIN_WIDTH): StyledText {
+  const chunks: TextChunk[] = []
+  const readiness = launchReadiness(state)
+  appendPanelTitle(chunks, "NEW ASSESSMENT", width, readiness.ready ? "READY" : "INCOMPLETE")
+
+  for (const [index, field] of launchFields.entries()) {
+    const selected = index === state.selectedIndex
+    if (field === "capabilities") {
+      appendLine(chunks, [selected ? accent("› ") : plain("  "), dim(pad("Capabilities", 16))])
+      const allowed = applicableCapabilities(state.input.target)
+      for (const [capabilityIndex, capability] of scanCapabilities.entries()) {
+        const active = state.input.capabilities.includes(capability.name)
+        const here = selected && capabilityIndex === state.capabilityIndex
+        const usable = allowed.includes(capability.name)
+        const row = `${here ? "›" : " "}   [${active ? "x" : " "}] ${pad(capability.name, 14)} ${capability.label}`
+        const text = clip(row, Math.max(20, width - 2))
+        appendLine(chunks, [
+          here ? bg(theme.selection)(accent(text)) : usable ? plain(text) : dim(text),
+        ])
+      }
+      continue
+    }
+    const value = field === "target"
+      ? state.input.target || "not set"
+      : field === "attestation"
+        ? state.input.attestation || "not set"
+        : field === "sandbox" ? state.input.sandbox.toUpperCase() : state.input.mode.toUpperCase()
+    const row = `${selected ? "›" : " "} ${pad(launchLabel(field), 16)} ${clip(value, Math.max(10, width - 22))}`
+    appendLine(chunks, [selected ? bg(theme.selection)(accent(row)) : plain(row)])
+  }
+
+  appendRule(chunks, width)
+  for (const line of wrap(launchHint(state), width)) appendLine(chunks, [dim(line)])
+  appendLine(chunks, [])
+  appendLine(chunks, [
+    readiness.ready ? success("■ READY") : warning("◇ INCOMPLETE"),
+    dim("   [↑↓] move   [←→] change   [space] toggle   [enter] edit   [s] start   [q] quit"),
+  ])
+  if (!readiness.ready && readiness.reason) {
+    for (const line of wrap(readiness.reason, width)) appendLine(chunks, [warning(line)])
+  }
+  if (state.message) for (const line of wrap(sanitizeTerminalText(state.message, 240), width)) appendLine(chunks, [plain(line)])
+  return new StyledText(chunks)
+}
+
+function launchLabel(field: LaunchField): string {
+  if (field === "target") return "Target"
+  if (field === "sandbox") return "Sandbox"
+  if (field === "mode") return "Mode"
+  if (field === "attestation") return "Authorized by"
+  return "Capabilities"
+}
+
+function launchHint(state: LaunchState): string {
+  const field = selectedLaunchField(state)
+  if (field === "target") {
+    return "The address you are authorized to assess, such as https://example.com. A bare origin covers "
+      + "everything under it; add a path to narrow it."
+  }
+  if (field === "capabilities") {
+    return "What this scan may do. The first two only read; reproduction repeats a finding against the live "
+      + "target and makes the run supervised."
+  }
+  if (field === "sandbox") {
+    return "LOCAL runs tools on this machine. CONTAINER isolates them and enforces an egress allowlist in the "
+      + "kernel, and needs a container engine."
+  }
+  if (field === "mode") {
+    return "AUTONOMOUS dispatches each validated transition. SUPERVISED waits for your approval before every one."
+  }
+  return "Who authorized this assessment, and under what reference. It is bound to the scope and appears in the "
+    + "report, so write what an auditor would need to see."
 }
 
 export function formatSettings(

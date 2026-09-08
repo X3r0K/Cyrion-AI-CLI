@@ -750,7 +750,17 @@ export class CyrionController {
   #enforceDeadline(): void {
     if (!this.#snapshot.startedAt) return
     const elapsed = Date.now() - Date.parse(this.#snapshot.startedAt)
-    if (elapsed > this.#snapshot.manifest.budgets.maxDurationMs) throw new Error("Engagement deadline exceeded")
+    const allowed = this.#snapshot.manifest.budgets.maxDurationMs
+    if (elapsed > allowed) {
+      // Name the numbers: a run that did all its work and then tripped the clock
+      // needs a bigger budget, not a bug report.
+      const done = this.#snapshot.tasks.filter((task) => task.status === "completed").length
+      throw new Error(
+        `Engagement deadline exceeded: ${Math.round(elapsed / 1_000)}s elapsed of the `
+        + `${Math.round(allowed / 1_000)}s allowed by budgets.maxDurationMs, with `
+        + `${done} of ${this.#snapshot.tasks.length} task(s) completed`,
+      )
+    }
   }
 
   #remainingBudget(): EngagementManifest["budgets"] {

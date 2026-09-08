@@ -1,6 +1,6 @@
 import type { ResourceUsage } from "@cyrion/contracts"
 import { diagnostic, getJson, postJson } from "./http"
-import { parseObject, safeCount, strictJsonInstruction, trimSlash } from "./openai-compatible"
+import { parseObject, safeCount, strictJsonInstruction, tighterCeiling, trimSlash } from "./openai-compatible"
 import type { ModelClient, ModelEndpoint, ModelRequest, ModelResponse, StructuredMode } from "./types"
 
 export interface OllamaOptions {
@@ -55,9 +55,16 @@ export class OllamaClient implements ModelClient {
     const ordered = this.#mode && modes.includes(this.#mode)
       ? [this.#mode, ...modes.filter((mode) => mode !== this.#mode)]
       : modes
+    // One budget across every mode, as with the OpenAI-compatible ladder.
+    const deadline = Date.now() + (request.timeoutMs ?? 120_000)
     const failures: string[] = []
     for (const mode of ordered) {
-      const attempt = await this.#attempt(mode, request)
+      const remaining = deadline - Date.now()
+      if (remaining <= 2_000) {
+        failures.push(`${mode}: skipped, the budget for this request was spent`)
+        break
+      }
+      const attempt = await this.#attempt(mode, { ...request, timeoutMs: remaining })
       if ("error" in attempt) {
         failures.push(`${mode}: ${attempt.error}`)
         continue
@@ -76,7 +83,7 @@ export class OllamaClient implements ModelClient {
   ): Promise<{ response: ModelResponse } | { error: string }> {
     const schema = request.schema
     const options: Record<string, unknown> = {}
-    const maxTokens = request.maxOutputTokens ?? this.#maxOutputTokens
+    const maxTokens = tighterCeiling(request.maxOutputTokens, this.#maxOutputTokens)
     if (maxTokens !== undefined) options.num_predict = maxTokens
     const temperature = request.temperature ?? this.#temperature
     if (temperature !== undefined) options.temperature = temperature

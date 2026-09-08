@@ -85,6 +85,14 @@ import {
   type ProviderStatus,
 } from "@cyrion/runtime-opencode"
 import { runTui } from "./tui"
+import { runLaunchScreen } from "./launch-screen"
+import {
+  buildScanManifest,
+  defaultScanInput,
+  scanCapabilities,
+  scanInputError,
+  type ScanInput,
+} from "./scan-config"
 import { prepareFixtureArtifacts } from "./fixture-artifacts"
 import { readGeneralSettings, saveProviderSelection } from "./provider-config"
 
@@ -200,9 +208,7 @@ async function runDemo(): Promise<void> {
     runtime = new GuardedAgentRuntime(fixtureRuntime, reviewer)
   } else if (selected.workers === "llm" && models) {
     const configured = models
-    // Validator review deliberately uses the validator binding, so a second
-    // model can check what the worker model produced.
-    const workerClients = new Map<string, ReturnType<typeof createClient>>()
+  const workerClients = new Map<string, ReturnType<typeof createClient>>()
     runtime = new GuardedAgentRuntime(fixtureRuntime, new LlmWorkerReviewer((role) => {
       const modelRole = role === "validator" ? "validator" : role === "reporter" ? "reporter" : "worker"
       const existing = workerClients.get(modelRole)
@@ -462,9 +468,89 @@ function runtimeProviderLabel(
  * executed in the selected sandbox, evidence hashed locally, and every
  * transition validated by the controller before anything is dispatched.
  */
+type EngagePlanner = "assessment" | "llm" | "llm-author"
+type EngageWorkers = "capability" | "llm"
+
+
+interface EngagementReview {
+  planner: EngagePlanner
+  workers: EngageWorkers
+  models?: ModelConfig
+  notice?: string
+}
+
+/**
+ * Decides whether a provider reviews this engagement.
+ *
+ * A real run is deterministic by default: the planner and the workers are the
+ * same ones a fixture run uses, and a model only ever reviews what they
+ * produced. Naming a review mode on the command line is honoured or refused;
+ * one inherited from saved defaults degrades to deterministic with the reason,
+ * because a missing endpoint must never stop an authorized assessment.
+ */
+async function resolveEngagementReview(settings: { defaultPlanner: string; defaultWorkers: string }): Promise<EngagementReview> {
+  const plannerFlag = readFlag("--planner")
+  const workersFlag = readFlag("--workers")
+  const planner = engagePlanner(plannerFlag ?? settings.defaultPlanner, !!plannerFlag)
+  const workers = engageWorkers(workersFlag ?? settings.defaultWorkers, !!workersFlag)
+  if (planner === "assessment" && workers === "capability") return { planner, workers }
+
+  const needed: ModelRole[] = [
+    ...(planner === "llm" || planner === "llm-author" ? ["planner" as const] : []),
+    ...(workers === "llm" ? ["worker" as const, "validator" as const, "reporter" as const] : []),
+  ]
+  const attempt = await modelConfigOrReason(needed)
+  if (!attempt.reason) return { planner, workers, ...(attempt.config ? { models: attempt.config } : {}) }
+
+  const plannerAsked = planner !== "assessment"
+  if ((plannerAsked && plannerFlag) || (workers === "llm" && workersFlag)) {
+    throw new Error(`The LLM runtime is not ready: ${attempt.reason}. ${MODEL_SETUP_HINT}`)
+  }
+  return {
+    planner: "assessment",
+    workers: "capability",
+    notice: `Provider review is off because ${attempt.reason}. `
+      + "The engagement still runs with its deterministic planner and capability workers.",
+  }
+}
+
+/** Saved defaults are shared with the fixture demo, where the word is "fixture". */
+function engagePlanner(value: string, explicit: boolean): EngagePlanner {
+  if (value === "assessment" || value === "fixture") return "assessment"
+  if (value === "llm" || value === "llm-author") return value
+  if (explicit) throw new Error("--planner must be assessment, llm, or llm-author for an engagement")
+  // OpenCode review is a fixture-demo path; a real run falls back rather than refusing.
+  return "assessment"
+}
+
+function engageWorkers(value: string, explicit: boolean): EngageWorkers {
+  if (value === "capability" || value === "fixture") return "capability"
+  if (value === "llm") return "llm"
+  if (explicit) throw new Error("--workers must be capability or llm for an engagement")
+  return "capability"
+}
+
+/** The model bound to each role this run will actually use, for the report. */
+function reportModels(prepared: PreparedEngagement): Array<{ role: string; endpoint: string; model: string }> {
+  if (!prepared.models) return []
+  const roles: ModelRole[] = [
+    ...(prepared.planner !== "assessment" ? ["planner" as const] : []),
+    ...(prepared.workers === "llm" ? ["worker" as const, "validator" as const, "reporter" as const] : []),
+  ]
+  const entries: Array<{ role: string; endpoint: string; model: string }> = []
+  for (const role of roles) {
+    const binding = bindingForRole(prepared.models, role)
+    if (binding) entries.push({ role, endpoint: binding.endpoint, model: binding.model })
+  }
+  return entries
+}
+
 interface PreparedEngagement {
   manifest: EngagementManifest
   controller: CyrionController
+  planner: EngagePlanner
+  workers: EngageWorkers
+  models?: ModelConfig
   evidenceStore: LocalEvidenceStore
   registry: CapabilityRegistry
   runner: LocalToolRunner | ContainerToolRunner
@@ -536,6 +622,8 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   const skills = await loadSkills(absolute(readFlag("--skills") ?? join(projectRoot, "skills")))
   if (!skills.length) throw new Error("No skills were loaded. Pass --skills <directory>.")
 
+  const review = await resolveEngagementReview(settings)
+
   const artifactRoot = absolute(readFlag("--artifacts") ?? ".cyrion/artifacts")
   const evidenceStore = new LocalEvidenceStore(artifactRoot)
   const stateArgument = readFlag("--state")
@@ -565,10 +653,42 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   })
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
 
+  // The deterministic planner and the capability workers are the engagement.
+  // A provider may review each transition and each canonical result, or author
+  // transitions the controller then validates — it never gains a tool.
+  const deterministicPlanner = new AssessmentRootPlanner({ skills })
+  const capabilityWorkers = new CapabilityWorkerRuntime({ skills })
+  const rootPrompt = review.models
+    ? await Bun.file(join(projectRoot, "agents/root/system.md")).text()
+    : ""
+  // A provider that will not answer must not outlast the engagement it is
+  // reviewing: the controller checks its deadline between transitions, so a
+  // single unbounded call would sail straight past it.
+  const modelTimeoutMs = Math.max(5_000, Number(readFlag("--model-timeout") ?? 150_000))
+  const workerClients = new Map<string, ReturnType<typeof createClient>>()
+  const runtime: AgentRuntime = review.workers === "llm" && review.models
+    ? new GuardedAgentRuntime(capabilityWorkers, new LlmWorkerReviewer((role) => {
+      const modelRole = role === "validator" ? "validator" : role === "reporter" ? "reporter" : "worker"
+      const existing = workerClients.get(modelRole)
+      if (existing) return existing
+      const client = createClient(review.models!, modelRole, Bun.env)
+      workerClients.set(modelRole, client)
+      return client
+    }, { timeoutMs: modelTimeoutMs }))
+    : capabilityWorkers
+  const planner: RootPlanner = review.planner === "llm" && review.models
+    ? new GuardedRootPlanner(
+      deterministicPlanner,
+      new LlmRootReviewer(createClient(review.models, "planner", Bun.env), rootPrompt, { timeoutMs: modelTimeoutMs }),
+    )
+    : review.planner === "llm-author" && review.models
+      ? new LlmRootPlanner(createClient(review.models, "planner", Bun.env), rootPrompt, { timeoutMs: modelTimeoutMs })
+      : deterministicPlanner
+
   const controller = new CyrionController(
     manifest,
-    new CapabilityWorkerRuntime({ skills }),
-    new AssessmentRootPlanner({ skills }),
+    runtime,
+    planner,
     join(projectRoot, "agents"),
     {
       ...(store ? { store } : {}),
@@ -579,9 +699,14 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
     },
   )
 
+  if (review.notice) console.error(`cyrion: ${terminalSafe(review.notice)}`)
+
   return {
     manifest,
     controller,
+    planner: review.planner,
+    workers: review.workers,
+    ...(review.models ? { models: review.models } : {}),
     evidenceStore,
     registry,
     runner,
@@ -623,6 +748,8 @@ async function runEngagement(): Promise<void> {
       console.log(JSON.stringify({
         ...statusSummary(result),
         sandbox: prepared.sandbox,
+        planner: prepared.planner,
+        workers: prepared.workers,
         skills: prepared.skills.map((skill) => skill.id),
       }))
       if (result.status !== "completed") process.exitCode = 1
@@ -633,8 +760,8 @@ async function runEngagement(): Promise<void> {
       prepared.evidenceStore,
       {
         mode: "live",
-        planner: "assessment",
-        workers: "capability",
+        planner: prepared.planner === "assessment" ? "assessment" : prepared.planner,
+        workers: prepared.workers,
         sandbox: prepared.sandbox,
         ...(prepared.attestation ? { attestation: prepared.attestation } : {}),
       },
@@ -971,10 +1098,12 @@ async function runCi(): Promise<void> {
     }
   })()
 
+  const models = reportModels(prepared)
   const context: ReportContext = {
     sandbox: prepared.sandbox,
-    runtime: { planner: "assessment", workers: "capability" },
+    runtime: { planner: prepared.planner, workers: prepared.workers },
     tools: await recordToolVersions(prepared).catch(() => []),
+    ...(models.length ? { models } : {}),
     ...(prepared.attestation ? { attestation: prepared.attestation } : {}),
   }
   await mkdir(reportDirectory, { recursive: true, mode: 0o700 })
@@ -1152,6 +1281,108 @@ async function runMcpClient(subcommand: "list" | "call"): Promise<void> {
   } finally {
     await client.close()
   }
+}
+
+
+/**
+ * The short path from "I want to scan this" to a running assessment.
+ *
+ * Everything a scan needs is decided once — the address, what it may do, and
+ * who authorized it — and written to a manifest and a scope lock the operator
+ * keeps. Nothing here bypasses a control: the same controller, the same scope
+ * engine, and the same attestation requirement apply. It only removes the
+ * requirement to assemble them by hand.
+ */
+async function runScan(): Promise<void> {
+  const flagTarget = readFlag("--target")
+  const headless = args.includes("--headless") || !process.stdout.isTTY
+  const host = await detectHost()
+  const requested = readFlag("--sandbox")
+  if (requested && requested !== "local" && requested !== "container") {
+    throw new Error("--sandbox must be local or container")
+  }
+  const detected: SandboxKind = (requested as SandboxKind | undefined)
+    ?? (host.securityDistribution || !host.containerEngine ? "local" : "container")
+
+  const mode = readFlag("--mode") ?? "autonomous"
+  if (mode !== "autonomous" && mode !== "supervised") throw new Error("--mode must be autonomous or supervised")
+  const requestedCapabilities = readFlag("--capabilities")?.split(",").map((value) => value.trim()).filter(Boolean)
+  for (const capability of requestedCapabilities ?? []) {
+    if (!scanCapabilities.some((entry) => entry.name === capability)) {
+      throw new Error(`--capabilities may name ${scanCapabilities.map((entry) => entry.name).join(", ")}`)
+    }
+  }
+
+  const initial: ScanInput = {
+    ...defaultScanInput,
+    sandbox: detected,
+    mode,
+    ...(flagTarget ? { target: flagTarget } : {}),
+    ...(readFlag("--attest") ? { attestation: readFlag("--attest")! } : {}),
+    ...(requestedCapabilities ? { capabilities: requestedCapabilities as ScanInput["capabilities"] } : {}),
+    ...(readFlag("--name") ? { name: readFlag("--name")! } : {}),
+  }
+
+  // A terminal gets the form; a pipeline gets exactly what it asked for.
+  const chosen = headless || (flagTarget && readFlag("--attest"))
+    ? initial
+    : await runLaunchScreen(initial)
+  if (!chosen) {
+    console.error("cyrion: no assessment was started")
+    return
+  }
+  const inputError = scanInputError(chosen)
+  if (inputError) throw new Error(inputError)
+
+  const manifest = buildScanManifest(chosen)
+  const lock = createScopeLock(manifest, chosen.attestation)
+  const directory = absolute(readFlag("--out") ?? ".cyrion/engagements")
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const manifestPath = join(directory, `${manifest.id}.json`)
+  const lockPath = join(directory, `${manifest.id}.lock`)
+  await Bun.write(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  await Bun.write(lockPath, `${JSON.stringify(lock, null, 2)}\n`)
+
+  console.error([
+    `cyrion: prepared ${terminalSafe(manifest.id)}`,
+    `  target       ${terminalSafe(manifest.scope.targets.join(", "))}`,
+    `  capabilities ${terminalSafe(manifest.scope.capabilities.join(", "))}`,
+    `  mode         ${manifest.mode.toUpperCase()}  sandbox ${chosen.sandbox.toUpperCase()}`,
+    `  scope hash   ${lock.scopeHash.slice(0, 32)}…`,
+    `  manifest     ${terminalSafe(manifestPath)}`,
+    `  lock         ${terminalSafe(lockPath)}`,
+  ].join("\n"))
+  if (args.includes("--dry-run")) {
+    console.error("cyrion: --dry-run, so nothing was executed. Start it with:")
+    console.error(`  cyrion engage --scope ${terminalSafe(manifestPath)} --scope-lock ${terminalSafe(lockPath)}`)
+    return
+  }
+
+  // Hand the prepared engagement to the same path `cyrion engage` uses.
+  const argv = [
+    "--scope", manifestPath,
+    "--scope-lock", lockPath,
+    "--sandbox", chosen.sandbox,
+    "--mode", manifest.mode,
+    ...(manifest.mode === "supervised" && headless ? ["--approve-all"] : []),
+    ...(manifest.scope.capabilities.includes("poc.run") ? ["--allow-unsupervised-poc"] : []),
+    ...(headless ? ["--headless"] : []),
+    ...passThrough(["--planner", "--workers", "--artifacts", "--state", "--skills", "--model-timeout"]),
+  ]
+  args.splice(0, args.length, "engage", ...argv)
+  await runEngagement()
+}
+
+/** Flags the operator set on `scan` that `engage` also understands. */
+function passThrough(names: readonly string[]): string[] {
+  const forwarded: string[] = []
+  for (const name of names) {
+    const index = args.indexOf(name)
+    if (index >= 0 && args[index + 1] && !args[index + 1]!.startsWith("--")) {
+      forwarded.push(name, args[index + 1]!)
+    }
+  }
+  return forwarded
 }
 
 async function runTools(): Promise<void> {
@@ -1565,13 +1796,19 @@ function usage(): string {
     "              [--scope-lock <path>]",
     "  cyrion providers [--json] [--check] [--select]",
     "  cyrion models [--models <path>] [--json] [--check] [--probe]",
+    "  cyrion scan [--target <url>] [--attest <text>] [--capabilities <list>]",
+    "              [--sandbox local|container] [--mode autonomous|supervised]",
+    "              [--out <directory>] [--dry-run] [--headless]",
     "  cyrion engage --scope <manifest> [--sandbox local|container] [--skills <dir>]",
+    "                [--planner assessment|llm|llm-author] [--workers capability|llm]",
+    "                [--model-timeout <ms>]",
     "                [--mode autonomous|supervised] [--approve-all] [--scope-lock <path>]",
     "                [--state <sqlite-path>] [--artifacts <directory>] [--headless]",
     "                [--allow-unsupervised-poc]",
     "  cyrion replay <finding-id> [--manifest <path>] [--artifacts <directory>]",
     "                [--bundle <path>] [--sandbox local|container] [--json]",
     "  cyrion ci --scope <manifest> [--fail-on critical|high|medium|low|info]",
+    "            [--planner assessment|llm|llm-author] [--workers capability|llm]",
     "            [--fail-on-unresolved] [--formats markdown,json,html,sarif,junit,csv]",
     "            [--report <directory>] [--sandbox local|container] [--json] [--verbose]",
     "  cyrion tools [--sandbox local|container] [--json] [--check]",
@@ -1587,6 +1824,7 @@ function usage(): string {
     "                [--format markdown|json|html|sarif|junit|csv] [--out <path>] [--fail-on <severity>]",
     "  cyrion version",
     "",
+    "`cyrion scan` with no flags opens a form: target, capabilities, sandbox, mode, and who authorized it.",
     "Fixture scenarios: known-positive, clean, rejected, incomplete",
     "OpenCode and llm planning or worker review may make billable model requests.",
     "Headless supervised runs require --approve-all.",
@@ -1610,6 +1848,7 @@ try {
   else if (command === "engage") await runEngagement()
   else if (command === "replay") await runReplay()
   else if (command === "ci") await runCi()
+  else if (command === "scan") await runScan()
   else if (command === "mcp") await runMcp()
   else if (command === "demo") await runDemo()
   else if (command === "status") runStatus()

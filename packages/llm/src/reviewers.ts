@@ -22,6 +22,14 @@ import type { ModelClient } from "./types"
 
 const NO_USAGE: ResourceUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 }
 
+/**
+ * A verdict plus a bounded rationale, with room for a reasoning model to think
+ * first: on those, the output budget covers the thinking as well as the answer.
+ */
+const REVIEW_OUTPUT_TOKENS = 8_192
+/** An authored plan is longer: it carries whole task specifications. */
+const PLAN_OUTPUT_TOKENS = 8_192
+
 export interface LlmReviewOptions {
   /** Wall-clock ceiling for a single review call. */
   timeoutMs?: number
@@ -50,7 +58,18 @@ export class LlmRootReviewer implements RootDecisionReviewer {
       system: this.#system,
       input: [
         "Review the exact controller-generated transition below.",
-        "Accept only when it is bounded by the supplied scope and budgets and is a valid next step.",
+        "The controller has ALREADY validated this transition deterministically and will do so again before",
+        "dispatch: approved scope and target, granted capabilities, duplicate tasks and keys, unknown or cyclic",
+        "dependencies, depth, and the task and agent budgets. Do not re-derive those checks; it has the",
+        "authoritative answer and you do not.",
+        "Two limits are commonly misread. maxConcurrentAgents is a batch size, not a queue limit: the",
+        "controller dispatches that many ready tasks at a time and the rest wait, so a transition that queues",
+        "more ready tasks than that is normal and violates nothing. maxAgents and maxTasks are the totals, and",
+        "the controller enforces them itself.",
+        "Stop only for something the controller cannot check: a step that does not follow from the engagement's",
+        "objective, that would act outside what the operator plainly authorized, or that is unsafe for the",
+        "target regardless of being in scope. When in doubt, accept — the controller is the enforcement, and",
+        "stopping a sound transition ends an authorized assessment for nothing.",
         "You may explain or stop the transition, but you may not alter tasks, targets, capabilities, or dependencies.",
         `Controller state:\n${JSON.stringify(publicPlannerState(snapshot))}`,
         `Proposed transition:\n${JSON.stringify(proposal)}`,
@@ -58,6 +77,7 @@ export class LlmRootReviewer implements RootDecisionReviewer {
       schema: rootDecisionReviewSchema as unknown as Record<string, unknown>,
       schemaName: "cyrion_root_review",
       validate: reasonFrom(assertRootDecisionReview),
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS,
       ...(this.#timeoutMs ? { timeoutMs: this.#timeoutMs } : {}),
     })
     this.#usage = response.usage
@@ -105,6 +125,7 @@ export class LlmRootPlanner implements RootPlanner {
       // Deliberately unvalidated here: a malformed plan is a policy event the
       // controller has to see and record, not a transport problem to retry away.
       schemaName: "cyrion_root_decision",
+      maxOutputTokens: PLAN_OUTPUT_TOKENS,
       ...(this.#timeoutMs ? { timeoutMs: this.#timeoutMs } : {}),
     })
     this.#usage = response.usage
@@ -189,6 +210,7 @@ export class LlmWorkerReviewer implements WorkerResultReviewer {
       schema: workerResultReviewSchema as unknown as Record<string, unknown>,
       schemaName: "cyrion_worker_review",
       validate: reasonFrom(assertWorkerResultReview),
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS,
       ...(this.#timeoutMs ? { timeoutMs: this.#timeoutMs } : {}),
     })
     return { review: assertWorkerResultReview(response.structured), usage: response.usage ?? NO_USAGE }

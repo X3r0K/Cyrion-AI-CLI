@@ -102,6 +102,25 @@ engagement still stops when it exceeds them.
 Each role binds to one endpoint and model. Copy `cyrion.models.example.json` to
 `cyrion.models.json` and edit it.
 
+A guarded review asks for 8192 output tokens and an authored plan for the same,
+because an uncapped reasoning model will spend minutes on thinking nobody reads
+— while a ceiling sized for the answer alone starves it, since on those models
+the budget covers the reasoning too. An answer cut off at the ceiling earns one
+retry of the same mode with a wider one. Where a role binding also sets
+`maxOutputTokens`, the tighter ceiling wins and the retry never exceeds it.
+
+Budget for it. A reasoning model reviewing every transition and every worker
+result turns a four-endpoint lab run into several minutes, and
+`budgets.maxDurationMs` is enforced against the whole engagement — a run that
+finishes all its work and then trips the clock is recorded as failed. Allow
+minutes, not seconds, when a provider is in the loop.
+
+**Reasoning models are a poor fit for guarded review.** A review is a verdict
+and a sentence; a model that thinks for forty seconds first makes every
+controller transition and every worker result expensive. Bind `planner` and
+`worker` to a fast model and keep the reasoning model for `llm-author`, where
+the plan itself is the output.
+
 | Role | Used for | Guidance |
 | --- | --- | --- |
 | `planner` | Root decisions and their review | Strongest reasoning; smallest output |
@@ -141,6 +160,20 @@ something invalid is an event the engagement record has to keep.
 Unstructured text is never accepted as a decision. If no rung produces a
 conforming object, the call fails and the controller records the failure.
 
+A mode the endpoint refuses outright is remembered and not asked for again. A
+400 naming the parameter — "this response_format type is unavailable", "thinking
+mode does not support this tool_choice" — is a fact about the endpoint, not a
+bad moment, and rediscovering it on every request is how a working configuration
+still runs out of time. Transient failures and off-schema answers stay
+retryable.
+
+One structured request spends a single wall-clock budget across the whole
+ladder, not one per rung: five modes each given the full timeout would let a
+slow endpoint hold one decision for five times as long as the caller agreed to
+wait. In an engagement that budget is `--model-timeout`, 90 seconds by default,
+because the controller checks its own deadline between transitions and an
+unbounded call would sail straight past it.
+
 Run `cyrion models --probe` to discover and print the working rung. The probe
 sends one tiny request per role, so it costs tokens on a hosted endpoint. Treat
 the reported rung as the first that *worked*, not proof of what the server
@@ -153,6 +186,14 @@ cyrion demo --planner llm                 # provider reviews each controller tra
 cyrion demo --planner llm --workers llm   # provider also reviews canonical worker results
 cyrion demo --planner llm-author          # provider authors transitions; controller validates them
 ```
+
+The reviewer is a second opinion, not the enforcement. The controller validates
+scope, capabilities, duplicates, dependencies, depth, and the task and agent
+budgets itself, before and after the review, and the prompt says so — a model
+asked to re-derive enforcement it cannot see stops sound transitions. It is
+asked to stop only for what the controller cannot check: a step that does not
+follow from the objective, reaches past what the operator plainly authorized, or
+is unsafe for the target regardless of being in scope.
 
 `llm` is the guarded mode: the controller builds the transition and the provider
 may accept it or stop the engagement. `llm-author` lets the provider propose the

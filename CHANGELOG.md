@@ -4,6 +4,76 @@ All notable changes to Cyrion Community are documented here.
 
 ## Unreleased
 
+- Added `cyrion scan`: one command from an address to a running assessment. With
+  no flags it opens a form — target, capabilities, sandbox, mode, and who
+  authorized it — and starts the run on `s`. With `--target` and `--attest` it
+  runs unattended. Either way it writes a manifest and a scope lock the operator
+  keeps, so the run stays repeatable and reviewable.
+- The form defaults to the two read-only capabilities. Reproduction is opt-in
+  and forces a supervised run; port scanning is hidden for a URL target, since
+  it needs a host or a range. Plain http to a remote host is refused before the
+  scan starts rather than after.
+- A bare name is treated as a website and an address, range, or port list is
+  not, so a host target keeps the capabilities that only apply to one.
+
+- The deadline error now names the numbers: elapsed against allowed, and how
+  many tasks finished. A run that completed all its work and then tripped the
+  clock needs a larger `budgets.maxDurationMs`, not a bug report.
+
+- The guarded review prompt now states what the controller has already
+  validated, and which limits the reviewer does not own. A live run stopped an
+  authorized engagement because the model read `maxConcurrentAgents` as a queue
+  limit when it is a batch size — the controller dispatches that many ready
+  tasks at a time and the rest wait. A reviewer asked to re-derive enforcement
+  it cannot see produces false stops, so it is now told to stop only for what
+  the controller cannot check and to accept when in doubt.
+
+- A truncated structured answer now earns one retry of the same mode with a
+  wider ceiling, instead of counting as a mode that does not work. On a
+  reasoning model the output budget covers the thinking as well as the answer,
+  so a ceiling sized for the answer alone starves it — the failure names its own
+  remedy, and the client acts on it. The retry never widens past the ceiling a
+  role binding set.
+- Review requests ask for 8192 output tokens rather than 2048, for the same
+  reason, and a cut-off answer now says so instead of reporting an opaque
+  finish reason.
+
+- Reviews now bound their own output. A guarded review is a verdict plus a
+  sentence, but nothing capped generation, so a thinking model spent minutes on
+  reasoning nobody reads and timed out the engagement. Reviews ask for at most
+  2048 output tokens and an authored plan for 8192.
+- A role binding's `maxOutputTokens` and a request's are both ceilings, so the
+  tighter one now wins: a caller cannot widen what the operator allowed, and an
+  operator's cap cannot silently ignore a task that needs less.
+
+- The structured-output ladder now remembers the modes an endpoint has said it
+  cannot serve. A 400 naming the parameter — DeepSeek answering "this
+  response_format type is unavailable", or "thinking mode does not support this
+  tool_choice" — is a settled fact about the endpoint, and re-asking on every
+  later request spent the whole budget rediscovering it. Transient failures and
+  off-schema answers stay retryable.
+- Raised the default provider-review budget for an engagement to 150 seconds,
+  which a thinking model needs for one answer now that the budget is spent on
+  attempts that can succeed.
+
+- A structured request now spends one wall-clock budget across the whole
+  output ladder instead of one per rung. Five modes each given the full timeout
+  let a slow endpoint hold a single decision for five times as long as the
+  caller agreed to wait, sailing past the engagement's own deadline, which the
+  controller only checks between transitions.
+- Provider review in an engagement is bounded by `--model-timeout`, 90 seconds
+  by default, so a provider that will not answer cannot outlast the run it is
+  reviewing.
+
+- `cyrion engage` and `cyrion ci` now take `--planner assessment|llm|llm-author`
+  and `--workers capability|llm`, so a provider can review a real engagement and
+  not only the fixture demo. Real runs stay deterministic by default and contact
+  no model unless asked; the headless summary and the report state what actually
+  planned the run, and the report records the model bound to each role.
+- A review mode inherited from saved defaults degrades to the deterministic
+  runtime with its reason rather than stopping an authorized assessment; one
+  named on the command line is still refused outright.
+
 - Added HTML, SARIF, JUnit, and CSV reports beside Markdown and JSON, all
   rendered from one record so the client report, the code-scanning dashboard,
   and the pipeline gate cannot disagree about what was found. HTML is

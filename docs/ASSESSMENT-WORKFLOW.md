@@ -26,8 +26,29 @@ The planner is deterministic and reads only the manifest and the loaded skills:
 4. **Report** — rendered from accepted records only.
 
 Each task records the skill that produced it, so a report can state its
-methodology. A provider can review each transition (`--planner llm`) or propose
-its own (`--planner llm-author`); the controller validates either way.
+methodology.
+
+## Optional provider review
+
+A real engagement is deterministic by default: the planner and the workers are
+the same ones a fixture run uses, and no model is contacted at all.
+
+```sh
+cyrion engage --scope engagement.json --planner llm      # a provider reviews each transition
+cyrion engage --scope engagement.json --workers llm      # and each canonical worker result
+cyrion engage --scope engagement.json --planner llm-author  # the provider proposes transitions
+```
+
+`llm` is the guarded mode: the controller builds the transition, the provider
+may accept it or stop the engagement, and it never gains a tool. `llm-author`
+lets the provider propose the transition instead — every field still passes the
+same validation, so an out-of-scope target, an ungranted capability, or a
+dependency cycle is rejected before anything is dispatched.
+
+A review mode named on the command line is honoured or refused. One inherited
+from saved defaults degrades to the deterministic runtime with the reason
+printed, because a missing endpoint must never stop an authorized assessment.
+The headless summary and the report both state what actually planned the run.
 
 ## What a worker may claim
 

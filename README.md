@@ -98,6 +98,24 @@ bun apps/cli/src/index.ts report ENG-0042 --state .cyrion/community.sqlite --for
 `markdown` and `json` and include normalized findings and evidence metadata,
 but deliberately omit artifact bodies.
 
+## Starting a scan
+
+```sh
+cyrion scan
+```
+
+A form asks for the address, what the scan may do, where it runs, and who
+authorized it. Press `s` and it starts. Or skip the form:
+
+```sh
+cyrion scan --target https://example.com --attest "I own example.com, personal site"
+```
+
+Cyrion writes a manifest and a scope lock into `.cyrion/engagements`, binds your
+attestation to that exact scope by hash, and runs it. The two defaults only read
+the target; reproduction and port scanning are opt-in, and switching on
+reproduction makes the run supervised. See [Starting a scan](docs/SCANNING.md).
+
 ## Running an assessment
 
 `cyrion engage` runs the real loop against an approved scope: recon, one task
@@ -292,6 +310,9 @@ See [Untrusted output boundary](docs/OUTPUT-BOUNDARY.md) for runtime contract,
 provenance, and finding-transition enforcement.
 See [Evidence admission](docs/EVIDENCE-ADMISSION.md) for canonical metadata,
 integrity checks, and recovery-time artifact validation.
+See [Starting a scan](docs/SCANNING.md) for the launch form, capability choices,
+and the authorization record.
+
 See [Proof of concept and replay](docs/POC-VALIDATION.md) for the PoC contract,
 bundle format, verdicts, and `cyrion replay`.
 

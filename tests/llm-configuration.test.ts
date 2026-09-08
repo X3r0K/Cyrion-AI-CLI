@@ -216,3 +216,62 @@ describe("starting without a model", () => {
     }
   }, 60_000)
 })
+
+describe("provider review of a real engagement", () => {
+  async function engage(extraEnv: Record<string, string>, extraArgs: string[]) {
+    const directory = await mkdtemp(join(tmpdir(), "cyrion-engage-llm-"))
+    try {
+      const manifestPath = join(directory, "engagement.json")
+      await Bun.write(manifestPath, JSON.stringify({
+        id: "ENG-REVIEW",
+        name: "Review fixture",
+        objective: "Check that provider review is optional, not required.",
+        profile: "web-api",
+        mode: "autonomous",
+        // A target nothing listens on: the run must reach its planner either way.
+        scope: { targets: ["http://127.0.0.1:1/"], excluded: [], capabilities: ["http.probe"] },
+        budgets: {
+          maxConcurrentAgents: 1, maxAgents: 6, maxDepth: 3, maxTasks: 6,
+          maxDurationMs: 30_000, maxTokens: 1_000, maxCostUsd: 1,
+        },
+      }))
+      const run = Bun.spawnSync({
+        cmd: ["bun", "run", join(projectRoot, "apps/cli/src/index.ts"), "engage",
+          "--scope", manifestPath, "--headless", "--sandbox", "local",
+          "--artifacts", join(directory, "artifacts"), ...extraArgs],
+        cwd: directory,
+        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? directory, ...extraEnv },
+      })
+      return {
+        exitCode: run.exitCode,
+        stdout: new TextDecoder().decode(run.stdout),
+        stderr: new TextDecoder().decode(run.stderr),
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+
+  test("an unreachable saved default degrades to the deterministic runtime, not to a stopped scan", async () => {
+    const run = await engage({ CYRION_DEFAULT_PLANNER: "llm", CYRION_DEFAULT_WORKERS: "llm" }, [])
+    expect(run.stderr).toContain("Provider review is off")
+    expect(run.stderr).toContain("The engagement still runs")
+
+    // The scan itself still ran, and the summary states what actually planned it.
+    const summary = JSON.parse(run.stdout.trim().split("\n").at(-1)!) as { planner: string; workers: string }
+    expect(summary.planner).toBe("assessment")
+    expect(summary.workers).toBe("capability")
+  }, 90_000)
+
+  test("a review mode named on the command line is refused rather than downgraded", async () => {
+    const run = await engage({}, ["--planner", "llm"])
+    expect(run.stderr).toContain("The LLM runtime is not ready")
+    expect(run.exitCode).toBe(1)
+  }, 90_000)
+
+  test("rejects a review mode that belongs to the fixture demo", async () => {
+    const run = await engage({}, ["--planner", "fixture-only"])
+    expect(run.stderr).toContain("--planner must be assessment, llm, or llm-author")
+    expect(run.exitCode).toBe(1)
+  }, 90_000)
+})

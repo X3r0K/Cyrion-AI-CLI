@@ -9,6 +9,13 @@ import type {
   StructuredMode,
 } from "./types"
 
+/** Total wall clock one structured request may spend across every mode. */
+const DEFAULT_LADDER_BUDGET_MS = 120_000
+/** Below this, a further attempt cannot finish and only delays the failure. */
+const MINIMUM_ATTEMPT_MS = 2_000
+/** Ceiling for the one retry a truncated answer earns. */
+const MAX_WIDENED_OUTPUT_TOKENS = 16_384
+
 export interface OpenAiCompatibleOptions {
   endpoint: ModelEndpoint
   model: string
@@ -37,6 +44,8 @@ export class OpenAiCompatibleClient implements ModelClient {
   readonly #temperature?: number
   readonly #maxResponseBytes?: number
   #mode?: StructuredMode
+  /** Modes this endpoint answered as unsupported. A settled fact, not a retry. */
+  readonly #unsupported = new Set<StructuredMode>()
 
   constructor(options: OpenAiCompatibleOptions) {
     this.endpoint = options.endpoint
@@ -76,10 +85,34 @@ export class OpenAiCompatibleClient implements ModelClient {
       if ("error" in attempt) throw new Error(attempt.error)
       return attempt.response
     }
+    // One budget for the whole ladder, not one per rung: five modes each given
+    // the full timeout would let a slow endpoint hold a single decision for five
+    // times as long as the caller agreed to wait.
+    const budgetMs = request.timeoutMs ?? DEFAULT_LADDER_BUDGET_MS
+    const deadline = Date.now() + budgetMs
     const failures: string[] = []
     for (const mode of this.#ladder()) {
-      const attempt = await this.#attempt(mode, request)
+      const remaining = deadline - Date.now()
+      if (remaining <= MINIMUM_ATTEMPT_MS) {
+        failures.push(`${mode}: skipped, the ${budgetMs}ms budget for this request was spent`)
+        break
+      }
+      let attempt = await this.#attempt(mode, { ...request, timeoutMs: remaining })
+      // A truncated answer is not a mode that does not work — it is a ceiling
+      // set too low. On a reasoning model the token budget covers the thinking
+      // as well as the answer, so a cap sized for the answer alone starves it.
+      if ("error" in attempt && attempt.truncated) {
+        const widened = Math.min(MAX_WIDENED_OUTPUT_TOKENS, Math.max(4_096, (request.maxOutputTokens ?? 2_048) * 4))
+        const left = deadline - Date.now()
+        if (left > MINIMUM_ATTEMPT_MS) {
+          attempt = await this.#attempt(mode, { ...request, timeoutMs: left, maxOutputTokens: widened })
+        }
+      }
       if ("error" in attempt) {
+        // A 4xx naming the parameter is the endpoint saying it cannot do this,
+        // not a bad moment. Asking again on every later request would spend the
+        // budget rediscovering the same answer.
+        if (attempt.unsupported) this.#unsupported.add(mode)
         failures.push(`${mode}: ${attempt.error}`)
         continue
       }
@@ -94,16 +127,29 @@ export class OpenAiCompatibleClient implements ModelClient {
 
   async close(): Promise<void> {}
 
-  /** Remembered mode first; otherwise most precise to most permissive. */
+  /**
+   * Remembered mode first, then most precise to most permissive, minus the ones
+   * this endpoint has already refused.
+   */
   #ladder(): StructuredMode[] {
     const order: StructuredMode[] = ["json-schema", "guided-json", "tool-call", "json-object", "strict-text"]
-    return this.#mode ? [this.#mode, ...order.filter((mode) => mode !== this.#mode)] : order
+    const viable = order.filter((mode) => !this.#unsupported.has(mode))
+    // strict-text asks for nothing the server has to support, so it always stays.
+    const candidates = viable.length ? viable : (["strict-text"] as StructuredMode[])
+    return this.#mode && candidates.includes(this.#mode)
+      ? [this.#mode, ...candidates.filter((mode) => mode !== this.#mode)]
+      : candidates
+  }
+
+  /** Modes this endpoint has said it cannot serve, for diagnostics. */
+  get unsupportedModes(): StructuredMode[] {
+    return [...this.#unsupported]
   }
 
   async #attempt(
     mode: StructuredMode,
     request: ModelRequest,
-  ): Promise<{ response: ModelResponse } | { error: string }> {
+  ): Promise<{ response: ModelResponse } | { error: string; unsupported?: boolean; truncated?: boolean }> {
     const schema = request.schema
     const name = request.schemaName ?? "cyrion_response"
     const body: Record<string, unknown> = {
@@ -116,7 +162,7 @@ export class OpenAiCompatibleClient implements ModelClient {
       ],
       stream: false,
     }
-    const maxTokens = request.maxOutputTokens ?? this.#maxOutputTokens
+    const maxTokens = tighterCeiling(request.maxOutputTokens, this.#maxOutputTokens)
     if (maxTokens !== undefined) body.max_tokens = maxTokens
     const temperature = request.temperature ?? this.#temperature
     if (temperature !== undefined) body.temperature = temperature
@@ -149,7 +195,13 @@ export class OpenAiCompatibleClient implements ModelClient {
     } catch (error) {
       return { error: diagnostic(error, this.#secrets()) }
     }
-    if (!result.ok) return { error: `HTTP ${result.status}: ${diagnostic(result.text, this.#secrets())}` }
+    if (!result.ok) {
+      const detail = diagnostic(result.text, this.#secrets())
+      return {
+        error: `HTTP ${result.status}: ${detail}`,
+        ...(unsupportedRequest(result.status, detail) ? { unsupported: true } : {}),
+      }
+    }
 
     const payload = result.json as ChatCompletion | undefined
     const choice = payload?.choices?.[0]
@@ -161,7 +213,13 @@ export class OpenAiCompatibleClient implements ModelClient {
     if (!schema) return { response: { text, usage, mode } }
     const structured = parseObject(text)
     if (structured === undefined) {
-      return { error: `response was not a JSON object (finish_reason ${choice.finish_reason ?? "unknown"})` }
+      const truncated = choice.finish_reason === "length"
+      return {
+        error: truncated
+          ? "the answer was cut off at the output ceiling before it was valid JSON"
+          : `response was not a JSON object (finish_reason ${choice.finish_reason ?? "unknown"})`,
+        ...(truncated ? { truncated: true } : {}),
+      }
     }
     const rejection = request.validate?.(structured)
     if (rejection) return { error: `response did not satisfy the schema: ${rejection}` }
@@ -198,6 +256,21 @@ interface ChatCompletion {
   usage?: { prompt_tokens?: number; completion_tokens?: number }
 }
 
+/**
+ * Whether a rejection means "this endpoint cannot do that", rather than "not
+ * right now". Only a client error qualifies, and only when the endpoint says
+ * the request itself was the problem — a rate limit or an outage must stay
+ * retryable.
+ */
+export function unsupportedRequest(status: number, detail: string): boolean {
+  if (status !== 400 && status !== 404 && status !== 422 && status !== 501) return false
+  // Capability language only. `invalid_request_error` is the error *type* on
+  // every 400 these APIs return, so matching it would retire a working mode
+  // after one oversized prompt or one malformed argument.
+  return /unavailable|not supported|unsupported|does not support|doesn't support|not available|unrecognized|unknown (?:field|parameter|argument)/i
+    .test(detail)
+}
+
 export function strictJsonInstruction(input: string, schema: Record<string, unknown>): string {
   return [
     input,
@@ -220,6 +293,19 @@ export function parseObject(text: string): unknown | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * The tighter of two ceilings.
+ *
+ * A role binding and a request each say how much output they will accept, and
+ * neither is a request for more: taking the smaller keeps an operator's cap
+ * from being widened by a caller, and a caller's cap from being ignored.
+ */
+export function tighterCeiling(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined) return second
+  if (second === undefined) return first
+  return Math.min(first, second)
 }
 
 export function trimSlash(value: string): string {
