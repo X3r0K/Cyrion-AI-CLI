@@ -136,7 +136,17 @@ export interface EvidenceCapture {
   engagementId: string
   id: string
   kind: EvidenceRef["kind"]
-  content: string
+  /** Artifact text. Give exactly one of `content` or `bytes`. */
+  content?: string
+  /**
+   * Artifact bytes, for an artifact that is not text — a screenshot, say.
+   *
+   * Kept separate from `content` rather than base64 inside it, because an
+   * artifact a reader cannot open is a poor exhibit: the digest has to cover
+   * the same bytes a viewer would see, and a PNG that is really a wall of
+   * base64 is neither.
+   */
+  bytes?: Uint8Array
   contentType: string
   source: string
   extension?: string

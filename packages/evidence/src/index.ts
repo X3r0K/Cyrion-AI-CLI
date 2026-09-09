@@ -20,7 +20,7 @@ export class LocalEvidenceStore implements EvidenceStore {
     const directory = this.#directory(input.engagementId)
     await mkdir(directory, { recursive: true, mode: 0o700 })
 
-    const bytes = new TextEncoder().encode(input.content)
+    const bytes = artifactBytes(input)
     const sha256 = createHash("sha256").update(bytes).digest("hex")
     const filename = `${input.id}.${extension}`
     const artifactPath = this.#inside(directory, filename)
@@ -122,7 +122,7 @@ export class MemoryEvidenceStore implements EvidenceStore {
   async capture(input: EvidenceCapture): Promise<EvidenceRef> {
     validateSegment("engagement ID", input.engagementId)
     validateSegment("evidence ID", input.id)
-    const bytes = new TextEncoder().encode(input.content)
+    const bytes = artifactBytes(input)
     const extension = input.extension ?? extensionFor(input.contentType)
     const reference: EvidenceRef = {
       id: input.id,
@@ -179,9 +179,26 @@ function validateSegment(label: string, value: string): void {
   if (!safeSegment.test(value) || value === "." || value === "..") throw new Error(`Invalid ${label}`)
 }
 
+/**
+ * The artifact's bytes, from whichever side the caller supplied.
+ *
+ * Exactly one, because two sources of truth for what was captured is two
+ * possible digests for one exhibit.
+ */
+function artifactBytes(input: EvidenceCapture): Uint8Array {
+  if (input.bytes !== undefined && input.content !== undefined) {
+    throw new Error("Evidence capture must supply either content or bytes, not both")
+  }
+  if (input.bytes !== undefined) return input.bytes
+  if (input.content === undefined) throw new Error("Evidence capture must supply content or bytes")
+  return new TextEncoder().encode(input.content)
+}
+
 function extensionFor(contentType: string): string {
   if (contentType === "application/json") return "json"
   if (contentType === "text/markdown") return "md"
+  if (contentType === "image/png") return "png"
+  if (contentType === "text/html") return "html"
   return "txt"
 }
 

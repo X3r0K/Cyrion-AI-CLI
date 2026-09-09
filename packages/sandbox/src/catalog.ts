@@ -18,6 +18,16 @@ export interface ToolRequirement {
    * manifest would fail on at dispatch.
    */
   planned?: boolean
+  /**
+   * npm package this capability needs, when what it depends on is a library
+   * rather than a binary on PATH.
+   *
+   * Kept apart from `binary` because the readiness question is different: a
+   * browser driver installs its own browser somewhere `which` will never find,
+   * so looking for it on PATH would report missing on a machine where the
+   * capability works.
+   */
+  module?: string
   /** How to get it when no package exists. */
   note?: string
   optional?: boolean
@@ -152,6 +162,16 @@ export const toolCatalog: readonly ToolRequirement[] = [
     packages: { apt: "semgrep", brew: "semgrep" },
     inImage: true,
     note: "pipx install semgrep",
+    optional: true,
+  },
+  {
+    capability: "browser.session",
+    binary: "",
+    module: "playwright",
+    purpose: "Render an approved page and report the requests it makes, with a screenshot",
+    packages: {},
+    inImage: false,
+    note: "bun add playwright && bunx playwright install chromium",
     optional: true,
   },
   {

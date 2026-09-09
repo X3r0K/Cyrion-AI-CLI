@@ -9,6 +9,7 @@ import type { OperatorCredentials } from "@cyrion/credentials"
 import type { Embedder, KnowledgeStore } from "@cyrion/knowledge"
 import type { TargetPin } from "@cyrion/scope"
 import { binariesFor, type ToolRunner } from "@cyrion/sandbox"
+import { browserSession } from "./browser"
 import { httpCrawl } from "./crawl"
 import { dnsLookup } from "./dns"
 import { httpProbe, httpRequest } from "./http"
@@ -25,6 +26,7 @@ export const capabilityAdapters: readonly CapabilityAdapter[] = [
   httpProbe,
   httpRequest,
   httpCrawl,
+  browserSession,
   netPortscan,
   netTls,
   knowledgeSearch,
@@ -68,6 +70,12 @@ export interface RegistryOptions {
    * names a credential fails rather than quietly doing so.
    */
   credentials?: OperatorCredentials
+  /**
+   * The operator accepted that `browser.session` drives a browser on this host
+   * even under a container sandbox. Without it a container run refuses the
+   * capability rather than quietly stepping outside the egress allowlist.
+   */
+  allowHostBrowser?: boolean
   /**
    * Adapters this release does not ship — today, operator-approved MCP tools.
    * They are filtered by `capabilities` like every built-in, and may not answer
@@ -134,6 +142,7 @@ export class CapabilityRegistry {
       ...(options.knowledge ? { knowledge: options.knowledge } : {}),
       ...(options.embedder ? { embedder: options.embedder } : {}),
       ...(options.credentials ? { credentials: options.credentials } : {}),
+      ...(options.allowHostBrowser ? { allowHostBrowser: true } : {}),
       nextEvidenceId: () => `${this.#prefix}-${String(++this.#evidenceSequence).padStart(4, "0")}`,
     }
   }

@@ -293,6 +293,29 @@ to start when the scope has since changed. Redirect and DNS-pinning checks live
 in the same engine, so a rebinding answer or an out-of-scope hop is refused
 rather than followed. See [Targets and scope](docs/SCOPE.md).
 
+## Rendering a page
+
+A crawl reads the links a site publishes — most of a server-rendered
+application, and almost none of a single-page one. `browser.session` renders an
+approved page in headless Chromium and reports what it actually did: the
+endpoints its scripts called, its own console errors, a screenshot, and the
+rendered DOM.
+
+The filter is the capability. A page fetches whatever its markup names — a tag
+manager, a font, an API on a host nobody approved — so every request it attempts
+goes through the same scope engine as everything else, and an out-of-scope one
+is aborted before it is sent rather than noted afterwards:
+
+```
+rendered /app → 200 · Orders · 14 requests, 2 refused
+```
+
+Playwright stays optional, like nmap: absent is fine and the error names the
+install command. Because the browser runs in the Cyrion process, a container run
+refuses the capability unless you pass `--allow-host-browser` — its requests are
+outside the kernel egress allowlist, and that is a trade to accept rather than
+discover. See [Rendering a page](docs/BROWSER.md).
+
 ## Pacing
 
 Budgets bound an engagement — agents, tasks, time, cost. None of them bound what
@@ -450,6 +473,8 @@ See [Pacing](docs/PACING.md) for the per-host limits, what they are counted
 against, and when a call is refused rather than held.
 See [Credentials](docs/CREDENTIALS.md) for the operator store, host binding,
 and what a stored artifact records in place of a secret.
+See [Rendering a page](docs/BROWSER.md) for the per-request scope filter, what a
+session captures, and why a container run refuses it by default.
 
 See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
 headless safeguards, audit events, and restart behavior.

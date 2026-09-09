@@ -524,6 +524,7 @@ something demonstrable.
 | 13 · Every detection is a file **[done]** | 0.5 | `anyOf` alternatives in a check, bounded to 2–8 and one level deep; `web-security-headers` migrated out of the worker | A claim that is a choice rather than a conjunction is expressible in a skill file; no shipped detection is code; the benchmark table is unchanged by the move ✔ |
 | 14 · Pacing **[done]** | 0.5 | `limits` in the manifest, a per-host limiter in the tool gateway shared by every agent, the wait recorded on the accepted event, and the pacing stated in every report | Six agents aimed at one host never exceed its concurrency cap, a planner naming more paths does not buy more of that host, and a spent ceiling is refused with the limit named ✔ |
 | 15 · Credentials **[done]** | 1 | `@cyrion/credentials`, `${cred:name}` references resolved at the send funnel, host-bound credentials, response scrubbing, `cyrion credentials`, and replay against the operator's own store | A check authenticates against a live target while the artifact, the event log, and the proof bundle record the reference rather than the value; a credential bound elsewhere is refused before the request leaves ✔ |
+| 16 · Rendered pages **[done]** | 1 | `browser.session`: a headless page under a per-request scope filter, screenshot and DOM evidence, the endpoints a script called, and a container run that refuses rather than leaving the allowlist quietly | A page reaching for a third-party script and image has both aborted before they are sent, the endpoint it called after loading is reported, and the screenshot verifies as a real PNG by digest ✔ |
 
 Roughly four months of focused work to a credible public beta. The first three
 phases are the ones that convert the current fixture demo into a real tool;
@@ -568,7 +569,7 @@ pin the worker image by digest in the release manifest.
 4. **`docs/TERMINAL.md` responsive claims.** ✔ Now accurate, with the pane math
    derived from the terminal width and verified at 84, 100, and 168 columns.
 
-### Delivered in phases 0 through 15
+### Delivered in phases 0 through 16
 
 - `packages/llm`: `ModelClient` interface; `openai-compatible`, `anthropic`, and
   native `ollama` adapters; per-role routing; strict config validation that
@@ -824,6 +825,31 @@ pin the worker image by digest in the release manifest.
   one, and prints no values. There is deliberately no command that writes a
   credential: an operator's editor and file permissions are a better place for
   that than an argv the shell records in a history file.
+
+- `browser.session` closes the last row of the capability catalog. The filter is
+  the capability and the rendering is the easy part: every other adapter makes
+  the requests it decided to make, while a page fetches whatever its markup and
+  scripts name — a tag manager, a font, an API on a host nobody approved. Each
+  request goes through the same scope engine as everything else and an
+  out-of-scope one is aborted rather than noted afterwards, redirects included.
+- What comes back is a screenshot, the rendered DOM, the page's own console
+  errors, and every request it attempted with the refusals marked. The endpoints
+  a script called after load are exactly what a crawl of published links cannot
+  find, and they are reported on an observation: a discovered address stays a
+  report rather than a permission.
+- Playwright is optional and stays optional — a browser and its driver are a
+  hundred megabytes for a capability most engagements never grant, so the
+  adapter resolves it at runtime and the error names the install command. The
+  catalog grew a `module` field so `cyrion tools` can tell the truth about a
+  capability backed by a library rather than a binary on PATH.
+- The browser runs in the Cyrion process, so under a container sandbox its
+  requests are outside the kernel egress allowlist. A container run refuses the
+  capability unless the operator passes `--allow-host-browser`, because a
+  userspace filter is a weaker guarantee than the kernel's and the difference
+  should be accepted rather than discovered in a report.
+- The evidence store now takes bytes as well as text, so a screenshot is a real
+  PNG a reader can open and a digest that covers the same bytes they would see —
+  rather than base64 wearing a PNG's name.
 
 ## 19. Open decisions for the maintainer
 

@@ -765,6 +765,7 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
     ...(knowledge ? { knowledge } : {}),
     ...(embedder ? { embedder } : {}),
     ...(credentials.size ? { credentials } : {}),
+    ...(args.includes("--allow-host-browser") ? { allowHostBrowser: true } : {}),
     ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
@@ -1126,6 +1127,7 @@ async function runProbe(): Promise<void> {
     ...(knowledge ? { knowledge } : {}),
     ...(embedder ? { embedder } : {}),
     ...(probeCredentials.size ? { credentials: probeCredentials } : {}),
+    ...(args.includes("--allow-host-browser") ? { allowHostBrowser: true } : {}),
     ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   // Pins used for the allowlist are the pins later connections are held to.
@@ -2315,6 +2317,12 @@ async function runTools(): Promise<void> {
     // A capability with no adapter cannot be granted, whatever is installed for
     // it. Saying so here is the difference between a catalog and a wish list.
     if (tool.planned) return { tool, state: "planned" as const }
+    // A capability backed by a library rather than a binary is not built-in:
+    // saying so on a machine that cannot run it is the same false advertisement
+    // the planned check above exists to prevent.
+    if (tool.module) {
+      return { tool, state: (await moduleInstalled(tool.module)) ? "installed" as const : "missing" as const }
+    }
     if (!tool.binary) return { tool, state: "built-in" as const }
     const info = await runner.lookup(tool.binary).catch(() => undefined)
     return { tool, state: info ? ("installed" as const) : ("missing" as const), ...(info ? { info } : {}) }
@@ -2333,7 +2341,11 @@ async function runTools(): Promise<void> {
         state,
         version: "info" in rest ? rest.info?.version ?? null : null,
       })),
-      install: { manager: plan.manager, command: plan.command, manual: plan.manual.map((tool) => tool.binary) },
+      install: {
+        manager: plan.manager,
+        command: plan.command,
+        manual: plan.manual.map((tool) => tool.binary || tool.module || tool.capability),
+      },
     }))
     if (args.includes("--check") && missing.some((tool) => !tool.optional)) process.exitCode = 1
     return
@@ -2361,18 +2373,35 @@ async function runTools(): Promise<void> {
       : row.state === "built-in"
         ? "BUILT-IN"
         : row.state === "installed" ? "INSTALLED" : row.tool.optional ? "MISSING (optional)" : "MISSING"
-    lines.push(`  ${row.tool.capability.padEnd(20)}${(row.tool.binary || "-").padEnd(12)}${state}${version}`)
+    const backing = row.tool.binary || row.tool.module || "-"
+    lines.push(`  ${row.tool.capability.padEnd(20)}${backing.padEnd(12)}${state}${version}`)
   }
   if (missing.length) {
     lines.push("", "install what is missing")
     if (plan.command) lines.push(`  ${plan.command}`)
     for (const tool of plan.manual) {
-      lines.push(`  ${tool.binary}: ${terminalSafe(tool.note ?? "no package is available for this manager")}`)
+      const name = tool.binary || tool.module || tool.capability
+      lines.push(`  ${name}: ${terminalSafe(tool.note ?? "no package is available for this manager")}`)
     }
     lines.push("", "Cyrion never installs packages for you. Review the command, then run it yourself.")
   }
   console.log(lines.join("\n"))
   if (args.includes("--check") && missing.some((tool) => !tool.optional)) process.exitCode = 1
+}
+
+/**
+ * Whether an optional library this release does not depend on is installed.
+ *
+ * Resolution rather than execution: importing it would run the package's own
+ * top-level code just to answer a readiness question.
+ */
+async function moduleInstalled(name: string): Promise<boolean> {
+  try {
+    await import.meta.resolve(name)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function runScope(): Promise<void> {
@@ -2745,7 +2774,7 @@ function usage(): string {
     "                [--model-timeout <ms>]",
     "                [--mode autonomous|supervised] [--approve-all] [--scope-lock <path>]",
     "                [--state <sqlite-path>] [--artifacts <directory>] [--headless]",
-    "                [--mcp <path>]",
+    "                [--mcp <path>] [--allow-host-browser]",
     "  cyrion replay <finding-id> [--manifest <path>] [--artifacts <directory>]",
     "                [--bundle <path>] [--sandbox local|container] [--json]",
     "  cyrion bench [--lab imperfect,clean,partial] [--sandbox local|container]",
@@ -2764,6 +2793,7 @@ function usage(): string {
     "  cyrion knowledge forget --source <id> [--knowledge <path>]",
     "  cyrion credentials [--credentials <path>] [--json]",
     "  cyrion probe --capability <name> --target <expression> [--manifest <path>]",
+    "               [--allow-host-browser]",
     "               [--sandbox local|container] [--json]",
     "  cyrion scope check [--manifest <path>] [--target <expression>] [--json] [--check]",
     "  cyrion scope lock [--attest <text>] [--manifest <path>] [--out <path>]",

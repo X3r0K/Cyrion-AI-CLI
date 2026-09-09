@@ -17,6 +17,12 @@ export interface CapabilityContext {
   /** Ranks retrieval semantically as well as lexically. Absent means lexical only. */
   embedder?: Embedder
   /**
+   * The operator has accepted that `browser.session` drives a browser on this
+   * host even in container mode, where its requests bypass the kernel egress
+   * allowlist and are held to the scope by Cyrion instead.
+   */
+  allowHostBrowser?: boolean
+  /**
    * The operator's credential store, read only where bytes leave for a host.
    *
    * Absent means an engagement that authenticates nothing, which is the common
