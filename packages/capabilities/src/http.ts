@@ -1,4 +1,5 @@
 import { POC_MAX_BODY_BYTES, POC_METHODS, redactHeaders, type ToolExecutionRequest } from "@cyrion/contracts"
+import { OperatorCredentials } from "@cyrion/credentials"
 import { parseHttpResponse, resolveEntry } from "./poc"
 import { checkPinnedAddress, checkRedirect, evaluateScope, parseTarget } from "@cyrion/scope"
 import type { CapabilityAdapter, CapabilityContext, CapabilityResult } from "./types"
@@ -257,9 +258,52 @@ export async function httpExchange(
   headers: Record<string, string> = {},
   body?: string,
 ): Promise<HttpExchange> {
-  return context.runner.kind === "container"
-    ? probeThroughContainer(url, method, request, context, signal, headers, body)
-    : probeInProcess(url, method, signal, headers, body)
+  // The last moment before bytes leave, and the first at which a credential
+  // exists as its value rather than its name. Every caller above this line
+  // holds `${cred:...}`, which is what reaches the evidence record, the event
+  // log, and any prompt built from them. Resolving here rather than at the
+  // caller is what makes that true of all of them at once.
+  const sent = resolveCredentials(headers, url, context)
+  const exchange = context.runner.kind === "container"
+    ? await probeThroughContainer(url, method, request, context, signal, sent, body)
+    : await probeInProcess(url, method, signal, sent, body)
+  // A target that echoes the credential back would otherwise put it into a
+  // summary, an artifact, and from there a prompt.
+  return scrubExchange(exchange, context)
+}
+
+/**
+ * Substitutes the operator's credentials for the references a check named.
+ *
+ * A reference to a credential that does not exist, or one bound to a different
+ * host, fails the call. Sending the request without it would produce a 401 that
+ * reads exactly like a finding, and quietly sending it to the wrong host is the
+ * leak this store exists to prevent.
+ */
+function resolveCredentials(
+  headers: Record<string, string>,
+  url: URL,
+  context: CapabilityContext,
+): Record<string, string> {
+  const referenced = Object.values(headers).some((value) => OperatorCredentials.references(value).length)
+  if (!referenced) return headers
+  if (!context.credentials) {
+    const names = Object.values(headers).flatMap((value) => OperatorCredentials.references(value))
+    throw new Error(
+      `This check references the credential ${names.map((name) => `"${name}"`).join(", ")}, `
+      + "but no credential store was loaded for this engagement.",
+    )
+  }
+  return context.credentials.resolveHeaders(headers, url)
+}
+
+function scrubExchange(exchange: HttpExchange, context: CapabilityContext): HttpExchange {
+  if (!context.credentials?.size) return exchange
+  return {
+    ...exchange,
+    headers: context.credentials.scrubHeaders(exchange.headers),
+    body: context.credentials.scrub(exchange.body),
+  }
 }
 
 /**

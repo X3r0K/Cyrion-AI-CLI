@@ -15,6 +15,7 @@ import {
   type ToolExecutionRequest,
   type ToolProgress,
 } from "@cyrion/contracts"
+import { OperatorCredentials } from "@cyrion/credentials"
 import { checkPinnedAddress, evaluateScope, isAddress, parseTarget, pinAddresses, type TargetPin } from "@cyrion/scope"
 import type { CapabilityAdapter, CapabilityContext, CapabilityResult } from "./types"
 
@@ -99,8 +100,12 @@ export const pocRun: CapabilityAdapter = {
 
       progress?.(`step ${index + 1} of ${plan.steps.length}: ${step.description}`)
       const argv = buildStepArgv(step, pins, stepTimeoutMs)
+      // The bundle records `argv`, which still names credentials rather than
+      // holding them, so a proof bundle can be attached to a report and replayed
+      // by someone who has their own copy of the secret. Only the command that
+      // actually runs carries the value.
       const result = await context.runner.run({
-        argv,
+        argv: resolveArgvCredentials(argv, step.url, context),
         timeoutMs: stepTimeoutMs,
         maxOutputBytes: Math.min(request.maxOutputBytes, MAX_STEP_BYTES),
         env: environment,
@@ -118,7 +123,10 @@ export const pocRun: CapabilityAdapter = {
         engagementId: request.engagementId,
         id: context.nextEvidenceId("E"),
         kind: "response",
-        content: `${safeArgv.join(" ")}\n\n${redactTranscript(transcript)}`
+        // Scrubbed as well as redacted: redaction removes a value from a header
+        // Cyrion sent, while a target that echoes the token into its body would
+        // otherwise put it in the artifact by a route no header rule covers.
+        content: `${safeArgv.join(" ")}\n\n${scrubbed(redactTranscript(transcript), context)}`
           + `${result.stderr ? `\n[stderr] ${result.stderr}` : ""}\n`,
         contentType: "text/plain",
         source: request.agentId,
@@ -321,6 +329,36 @@ export function redactTranscript(transcript: string): string {
  * finding has to be in it; the operator's session token does not, and a bundle
  * that carries one cannot safely be attached to a report.
  */
+/** Replaces any credential the target echoed back with the name it was sent under. */
+function scrubbed(text: string, context: CapabilityContext): string {
+  return context.credentials?.size ? context.credentials.scrub(text) : text
+}
+
+/**
+ * Substitutes credentials into the command that will actually run.
+ *
+ * A proof step authenticates the same way a check does, by naming a credential
+ * the operator holds. The reference is resolved against the step's own URL, so
+ * a plan whose later steps wander to another host cannot carry the token there.
+ */
+export function resolveArgvCredentials(
+  argv: readonly string[],
+  url: string,
+  context: CapabilityContext,
+): string[] {
+  const referenced = argv.some((value) => OperatorCredentials.references(value).length)
+  if (!referenced) return [...argv]
+  if (!context.credentials) {
+    const names = argv.flatMap((value) => OperatorCredentials.references(value))
+    throw new Error(
+      `This proof step references the credential ${[...new Set(names)].map((name) => `"${name}"`).join(", ")}, `
+      + "but no credential store was loaded for this engagement.",
+    )
+  }
+  const credentials = context.credentials
+  return argv.map((value) => credentials.resolve(value, url, "a proof step"))
+}
+
 export function redactArgv(argv: readonly string[]): string[] {
   const safe: string[] = []
   for (let index = 0; index < argv.length; index += 1) {

@@ -27,6 +27,9 @@
       "@cyrion/controller": [
         "packages/controller/src/index.ts"
       ],
+      "@cyrion/credentials": [
+        "packages/credentials/src/index.ts"
+      ],
       "@cyrion/evidence": [
         "packages/evidence/src/index.ts"
       ],

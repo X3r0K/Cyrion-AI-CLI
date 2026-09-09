@@ -95,6 +95,14 @@ export function renderMarkdownReport(snapshot: EngagementSnapshot, context: Repo
     `| Cost (USD) | ${report.budgets.granted.maxCostUsd} | ${report.budgets.consumed.costUsd} |`,
     `| Tasks | ${report.budgets.granted.maxTasks} | ${report.summary.tasks} |`,
     "",
+    // Pacing is reported beside the budgets because a client asks two separate
+    // questions: how much did this cost me, and how hard did you push my server.
+    "## Pacing",
+    "",
+    `Every host in scope was held to at most one request every ${report.limits.minRequestGapMs} ms, `
+    + `${report.limits.maxConcurrentPerTarget} in flight at a time, and `
+    + `${report.limits.maxRequestsPerTarget} requests for the engagement — across all agents, not each.`,
+    "",
     "## Findings",
     "",
   )

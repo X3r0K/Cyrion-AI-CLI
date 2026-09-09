@@ -5,6 +5,7 @@ import type {
   ToolExecutionRequest,
   ToolProgress,
 } from "@cyrion/contracts"
+import type { OperatorCredentials } from "@cyrion/credentials"
 import type { Embedder, KnowledgeStore } from "@cyrion/knowledge"
 import type { TargetPin } from "@cyrion/scope"
 import { binariesFor, type ToolRunner } from "@cyrion/sandbox"
@@ -61,6 +62,12 @@ export interface RegistryOptions {
   /** Corpus `knowledge.search` reads. Without it the capability refuses rather than inventing. */
   knowledge?: KnowledgeStore
   embedder?: Embedder
+  /**
+   * Credentials for authenticated testing, held by the operator rather than by
+   * a skill file. Absent means every check runs unauthenticated, and one that
+   * names a credential fails rather than quietly doing so.
+   */
+  credentials?: OperatorCredentials
   /**
    * Adapters this release does not ship — today, operator-approved MCP tools.
    * They are filtered by `capabilities` like every built-in, and may not answer
@@ -126,6 +133,7 @@ export class CapabilityRegistry {
       pins: new Map<string, TargetPin>(),
       ...(options.knowledge ? { knowledge: options.knowledge } : {}),
       ...(options.embedder ? { embedder: options.embedder } : {}),
+      ...(options.credentials ? { credentials: options.credentials } : {}),
       nextEvidenceId: () => `${this.#prefix}-${String(++this.#evidenceSequence).padStart(4, "0")}`,
     }
   }

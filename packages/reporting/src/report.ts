@@ -1,12 +1,15 @@
 import type {
   EngagementBudgets,
+  EngagementLimits,
   EngagementSnapshot,
   Finding,
   FindingReproduction,
   ResourceUsage,
   Severity,
 } from "@cyrion/contracts"
+import { DEFAULT_ENGAGEMENT_LIMITS } from "@cyrion/contracts"
 import { scopeHash } from "@cyrion/scope"
+
 
 export const REPORT_VERSION = "cyrion.community/report-v2" as const
 
@@ -96,6 +99,14 @@ export interface CommunityReport {
     granted: EngagementBudgets
     consumed: ResourceUsage
   }
+  /**
+   * What one host was held to, whoever was asking.
+   *
+   * Stated because a client reading this report is entitled to know how hard
+   * their machine was pushed, and because a run that found nothing under a very
+   * slow pace is a different result from one that found nothing at full speed.
+   */
+  limits: EngagementLimits
   findings: Finding[]
   validations: ReportValidation[]
   evidence: Array<{
@@ -168,6 +179,7 @@ export function buildCommunityReport(snapshot: EngagementSnapshot, context: Repo
       granted: structuredClone(snapshot.manifest.budgets),
       consumed: structuredClone(snapshot.usage),
     },
+    limits: structuredClone(snapshot.manifest.limits ?? DEFAULT_ENGAGEMENT_LIMITS),
     findings: structuredClone(snapshot.findings),
     validations: snapshot.findings
       .filter((finding) => finding.validatedBy || finding.reproduction)

@@ -5,6 +5,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@cyrion/contracts": "workspace:*",
+    "@cyrion/credentials": "workspace:*",
     "@cyrion/knowledge": "workspace:*",
     "@cyrion/mcp": "workspace:*",
     "@cyrion/sandbox": "workspace:*",

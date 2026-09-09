@@ -1,4 +1,5 @@
 export * from "./controller"
 export * from "./event-store"
 export * from "./fixture-planner"
+export * from "./target-limits"
 export * from "./tool-gateway"

@@ -1,4 +1,5 @@
 import type { EvidenceRef, EvidenceStore, ScopePolicy, ToolExecutionRequest, ToolProgress } from "@cyrion/contracts"
+import type { OperatorCredentials } from "@cyrion/credentials"
 import type { Embedder, KnowledgeStore } from "@cyrion/knowledge"
 import type { TargetPin } from "@cyrion/scope"
 import type { ToolRunner } from "@cyrion/sandbox"
@@ -15,6 +16,14 @@ export interface CapabilityContext {
   knowledge?: KnowledgeStore
   /** Ranks retrieval semantically as well as lexically. Absent means lexical only. */
   embedder?: Embedder
+  /**
+   * The operator's credential store, read only where bytes leave for a host.
+   *
+   * Absent means an engagement that authenticates nothing, which is the common
+   * case; a check that references a credential then fails with the name it
+   * could not find rather than running unauthenticated.
+   */
+  credentials?: OperatorCredentials
 }
 
 export interface CapabilityResult {

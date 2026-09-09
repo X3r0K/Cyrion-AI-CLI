@@ -1,6 +1,6 @@
 import { evaluateScope } from "@cyrion/scope"
+import { DEFAULT_ENGAGEMENT_LIMITS, type EngagementManifest } from "@cyrion/contracts"
 import type {
-  EngagementManifest,
   TaskSpec,
   ToolAdapter,
   ToolExecutionRequest,
@@ -8,6 +8,7 @@ import type {
   ToolGateway,
   ToolInvocation,
 } from "@cyrion/contracts"
+import { TargetLimiter } from "./target-limits"
 
 /** At most one progress note per interval, per tool call. */
 const PROGRESS_INTERVAL_MS = 1_000
@@ -44,10 +45,25 @@ export function outcomeOf(output: unknown): string | undefined {
 export class ScopedToolGateway {
   readonly #manifest: EngagementManifest
   readonly #adapters: Readonly<Record<string, ToolAdapter>>
+  /**
+   * One limiter for the whole engagement.
+   *
+   * Per-worker pacing would not be pacing at all: the host feels the sum of
+   * every agent, so the count has to be kept where every agent passes, which is
+   * here. This is also the only place a capability can be called from, so no
+   * adapter can reach a target by a route that skips it.
+   */
+  readonly #limiter: TargetLimiter
 
   constructor(manifest: EngagementManifest, adapters: Readonly<Record<string, ToolAdapter>>) {
     this.#manifest = structuredClone(manifest)
     this.#adapters = adapters
+    this.#limiter = new TargetLimiter(manifest.limits ?? DEFAULT_ENGAGEMENT_LIMITS)
+  }
+
+  /** Pacing in force, so `cyrion status` and the report can state it. */
+  get limits() {
+    return this.#limiter.limits
   }
 
   bind(binding: Binding): ToolGateway {
@@ -75,13 +91,42 @@ export class ScopedToolGateway {
       taskId: binding.task.id,
       agentId: binding.agentId,
     }
+
+    // Held here, after the request is known to be legitimate and before it is
+    // announced as accepted. A call refused by the pace never happened as far
+    // as the target is concerned, so it is recorded as a rejection rather than
+    // as an accepted call that failed.
+    let lease
+    try {
+      lease = await this.#limiter.acquire(request.target)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      binding.emit(
+        "tool.request.rejected",
+        { reason, capability: request.capability, target: request.target },
+        binding.agentId,
+        binding.task.id,
+      )
+      throw error
+    }
+
     binding.emit(
       "tool.request.accepted",
-      { capability: request.capability, target: request.target, timeoutMs: request.timeoutMs },
+      {
+        capability: request.capability,
+        target: request.target,
+        timeoutMs: request.timeoutMs,
+        // Why a run is slower than the tool timings suggest. Without this the
+        // operator sees idle time with nothing accounting for it.
+        ...(lease.waitedMs > 0 ? { waitedMs: lease.waitedMs } : {}),
+      },
       binding.agentId,
       binding.task.id,
     )
 
+    // The clock starts once the call is actually allowed to leave. Charging a
+    // tool for time it spent queued behind the pacer would make a timeout mean
+    // two different things and would fail slow-but-healthy work first.
     const started = performance.now()
     const adapter = this.#adapters[request.capability]!
     const controller = new AbortController()
@@ -143,6 +188,7 @@ export class ScopedToolGateway {
       throw error
     } finally {
       clearTimeout(timeout)
+      lease.release()
     }
   }
 

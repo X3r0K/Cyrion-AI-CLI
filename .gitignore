@@ -8,4 +8,5 @@ coverage/
 .cyrion/
 *.log
 cyrion.models.json
+cyrion.credentials.json
 CYRION-V2-PLAN.md

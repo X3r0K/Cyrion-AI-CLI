@@ -293,6 +293,48 @@ to start when the scope has since changed. Redirect and DNS-pinning checks live
 in the same engine, so a rebinding answer or an out-of-scope hop is refused
 rather than followed. See [Targets and scope](docs/SCOPE.md).
 
+## Pacing
+
+Budgets bound an engagement — agents, tasks, time, cost. None of them bound what
+one machine receives, and a swarm hitting a single host is the likeliest way an
+authorized assessment does real damage. So a second set of limits is counted per
+host and shared by every agent:
+
+```json
+"limits": { "minRequestGapMs": 500, "maxConcurrentPerTarget": 1, "maxRequestsPerTarget": 300, "maxQueueWaitMs": 60000 }
+```
+
+The limiter sits in the tool gateway, which is the only place a capability can
+be called from, and it counts against the *hostname* — two tasks aimed at
+`/orders` and `/invoices` have not found two machines to talk to. Waiting is
+normal and is recorded on the accepted event; only a spent ceiling or a queue
+deeper than you allowed is refused, naming the limit that caused it. Every
+report states the pacing that was in force.
+See [Pacing](docs/PACING.md).
+
+## Credentials
+
+Testing authorization means authenticating, and a token written into a skill
+file is a secret in version control, a string in every prompt built from that
+skill, and a value in every artifact the exchange produced. So a skill names a
+credential and never holds one:
+
+```sh
+cyrion credentials            # names and hosts; never a value
+```
+
+```json
+"headers": { "authorization": "Bearer ${cred:api-token}" }
+```
+
+The value lives in your own `cyrion.credentials.json`, states the hosts it may
+be sent to, and meets its name inside the function that writes bytes to a
+socket. What reaches the artifact, the event log and the proof bundle is the
+reference — so a bundle stays shareable, and `cyrion replay` re-resolves it
+against whoever is replaying. A target that echoes the value back has it
+scrubbed out before it becomes a summary or a prompt.
+See [Credentials](docs/CREDENTIALS.md).
+
 ## Model providers
 
 Provider access is not tied to one vendor or one SDK. Point Cyrion at a hosted
@@ -341,7 +383,7 @@ of issue, and the file says so.
 - `apps/cli` — Cyrion terminal application.
 - `packages/contracts` — public, versioned engagement/task/event contracts.
 - `packages/controller` — Root decision loop, scheduler, SQLite state, leases,
-  budgets, and the scope-bound tool gateway.
+  budgets, per-host pacing, and the scope-bound tool gateway.
 - `packages/evidence` — local artifact persistence, metadata, hashing,
   integrity verification, and bounded provider previews.
 - `packages/llm` — provider-agnostic model clients, role routing, structured
@@ -352,6 +394,8 @@ of issue, and the file says so.
   and the container egress allowlist.
 - `packages/capabilities` — typed capability adapters that build argv, enforce
   scope, and capture hashed evidence.
+- `packages/credentials` — the operator's credential store: host-bound values a
+  skill refers to by name and never holds.
 - `packages/skills` — the methodology format, loader, and applicability rules.
 - `packages/knowledge` — the local corpus: ingest, chunking, SQLite storage with
   full-text and optional vector search, and public-standard source descriptors.
@@ -378,7 +422,10 @@ Only assess systems you own or are explicitly authorized to test. The
 controller—not a model prompt—enforces target scope, capability grants,
 concurrency, depth, and budgets. Real capabilities run only where the manifest
 grants them, in the sandbox you chose; `poc.run` is off unless it is granted and
-supervised unless you opt out in as many words.
+supervised unless you opt out in as many words. Every host in scope is paced
+independently of the engagement's own budgets, so a swarm of agents cannot land
+on one machine at once, and credentials for authenticated testing are held by
+you and referred to by name rather than written into anything Cyrion stores.
 
 See [Controller and execution](docs/CONTROLLER.md) for the durable-state and
 tool-gateway guarantees and their current limitations.
@@ -399,6 +446,10 @@ and the authorization record.
 
 See [Proof of concept and replay](docs/POC-VALIDATION.md) for the PoC contract,
 bundle format, verdicts, and `cyrion replay`.
+See [Pacing](docs/PACING.md) for the per-host limits, what they are counted
+against, and when a call is refused rather than held.
+See [Credentials](docs/CREDENTIALS.md) for the operator store, host binding,
+and what a stored artifact records in place of a secret.
 
 See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
 headless safeguards, audit events, and restart behavior.

@@ -15,6 +15,7 @@ import {
 } from "@cyrion/contracts"
 import { CyrionController, FixtureRootPlanner, ScopedToolGateway, SQLiteEngagementStore } from "@cyrion/controller"
 import { LocalEvidenceStore } from "@cyrion/evidence"
+import { loadCredentials, type OperatorCredentials } from "@cyrion/credentials"
 import {
   LlmRootPlanner,
   LlmRootReviewer,
@@ -754,6 +755,7 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
     ? openCorpus(knowledgePath())
     : undefined
   const embedder = knowledge ? await optionalEmbedder() : undefined
+  const credentials = await openCredentials()
 
   const registry = new CapabilityRegistry({
     runner,
@@ -762,6 +764,7 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
     capabilities: manifest.scope.capabilities,
     ...(knowledge ? { knowledge } : {}),
     ...(embedder ? { embedder } : {}),
+    ...(credentials.size ? { credentials } : {}),
     ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
@@ -885,6 +888,29 @@ async function mcpCapabilities(
 
 function knowledgePath(): string {
   return absolute(readFlag("--knowledge") ?? ".cyrion/knowledge.sqlite")
+}
+
+function credentialsPath(): string {
+  return absolute(readFlag("--credentials") ?? Bun.env.CYRION_CREDENTIALS ?? "cyrion.credentials.json")
+}
+
+/**
+ * Reads the operator's credential store, and says so without saying what is in
+ * it.
+ *
+ * The line is printed because an engagement that authenticates is a materially
+ * different run from one that does not, and the operator should be able to see
+ * from the transcript which one they got. Names and hosts are printed; values
+ * are not, here or anywhere else.
+ */
+async function openCredentials(): Promise<OperatorCredentials> {
+  const path = credentialsPath()
+  const credentials = await loadCredentials(path)
+  if (credentials.size) {
+    const named = credentials.list().map((entry) => `${entry.name} → ${entry.hosts.join(", ")}`)
+    console.log(`cyrion: ${credentials.size} credential(s) loaded from ${terminalSafe(path)}: ${named.join("; ")}`)
+  }
+  return credentials
 }
 
 /**
@@ -1091,6 +1117,7 @@ async function runProbe(): Promise<void> {
   // under the same grant, scope check, and evidence rules.
   const mcp = await mcpCapabilities([capability], kind)
 
+  const probeCredentials = await openCredentials()
   const registry = new CapabilityRegistry({
     runner,
     scope: manifest.scope,
@@ -1098,6 +1125,7 @@ async function runProbe(): Promise<void> {
     capabilities: manifest.scope.capabilities,
     ...(knowledge ? { knowledge } : {}),
     ...(embedder ? { embedder } : {}),
+    ...(probeCredentials.size ? { credentials: probeCredentials } : {}),
     ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   // Pins used for the allowlist are the pins later connections are held to.
@@ -1203,11 +1231,17 @@ async function runReplay(): Promise<void> {
       ...(egress ? { egress: egress.policy } : {}),
       ...(args.includes("--allow-unfiltered-egress") ? { allowUnfilteredEgress: true } : {}),
     })
+  // A bundle records the credential's name rather than its value, so a replay
+  // needs the operator's store to authenticate the way the original run did.
+  // That is the point of storing the reference: the bundle is shareable, and
+  // whoever replays it supplies their own secret.
+  const replayCredentials = await openCredentials()
   const registry = new CapabilityRegistry({
     runner,
     scope: manifest.scope,
     evidence: evidenceStore,
     capabilities: ["poc.run"],
+    ...(replayCredentials.size ? { credentials: replayCredentials } : {}),
   })
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
 
@@ -2004,6 +2038,65 @@ async function runWatch(): Promise<void> {
 }
 
 /**
+ * What Cyrion will authenticate as, without ever printing what with.
+ *
+ * There is deliberately no command that writes a credential. Cyrion reading a
+ * secret it was handed is one thing; Cyrion holding the pen that writes secrets
+ * to disk is another, and an operator's own editor and file permissions are a
+ * better place for that than an argv the shell will put in a history file.
+ */
+async function runCredentials(): Promise<void> {
+  const path = credentialsPath()
+  const json = args.includes("--json")
+  if (!existsSync(path)) {
+    if (json) console.log(JSON.stringify({ path, credentials: [] }, null, 2))
+    else {
+      console.log(`No credential store at ${path}.`)
+      console.log("")
+      console.log("Create one to test authenticated surfaces. It holds values; skills hold names:")
+      console.log("")
+      console.log(JSON.stringify(
+        {
+          version: "cyrion.community/credentials-v1",
+          credentials: [{
+            name: "api-token",
+            value: "<the token>",
+            hosts: ["api.example.test"],
+            description: "Read-only service account",
+          }],
+        },
+        null,
+        2,
+      ))
+      console.log("")
+      console.log("A skill then writes: \"headers\": { \"authorization\": \"Bearer ${cred:api-token}\" }")
+      console.log("Keep the file out of version control; Cyrion never writes it and never prints a value.")
+    }
+    return
+  }
+  const credentials = await loadCredentials(path)
+  const entries = credentials.list()
+  if (json) {
+    console.log(JSON.stringify({ path, credentials: entries }, null, 2))
+    return
+  }
+  console.log(`Credential store: ${terminalSafe(path)}`)
+  console.log("")
+  if (!entries.length) {
+    console.log("The store is valid and holds no credentials.")
+    return
+  }
+  for (const entry of entries) {
+    console.log(`  ${terminalSafe(entry.name)}`)
+    console.log(`    may be sent to  ${terminalSafe(entry.hosts.join(", "))}`)
+    console.log(`    model may read  ${entry.exposeToModel ? "yes (explicitly allowed)" : "no"}`)
+    if (entry.description) console.log(`    note            ${terminalSafe(entry.description, 120)}`)
+  }
+  console.log("")
+  console.log("Reference one from a skill or a manifest as ${cred:<name>}. Values are never printed.")
+}
+
+/**
  * The operator's side of the corpus: what is in it, how it got there, and what
  * a search actually returns.
  *
@@ -2669,6 +2762,7 @@ function usage(): string {
     "                        [--embed] [--knowledge <path>] [--json]",
     "  cyrion knowledge search <query> [--k <n>] [--knowledge <path>] [--json]",
     "  cyrion knowledge forget --source <id> [--knowledge <path>]",
+    "  cyrion credentials [--credentials <path>] [--json]",
     "  cyrion probe --capability <name> --target <expression> [--manifest <path>]",
     "               [--sandbox local|container] [--json]",
     "  cyrion scope check [--manifest <path>] [--target <expression>] [--json] [--check]",
@@ -2712,6 +2806,7 @@ try {
   else if (command === "scope") await runScope()
   else if (command === "tools") await runTools()
   else if (command === "knowledge") await runKnowledge()
+  else if (command === "credentials") await runCredentials()
   else if (command === "probe") await runProbe()
   else if (command === "engage") await runEngagementSession()
   else if (command === "replay") await runReplay()

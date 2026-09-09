@@ -459,6 +459,11 @@ section. Reports never embed artifact bodies by default; they reference them.
   are absent from the capability catalog, not merely discouraged in a prompt.
 - Rate limiting and concurrency caps per target, not just per engagement — a
   swarm hitting one host is the most likely way to cause real damage.
+  **Delivered** in phase 14: `limits` in the manifest, counted per host by one
+  limiter in the tool gateway that every agent passes through, so the cap is
+  what the machine feels rather than what any one worker did. Keyed on the
+  hostname rather than the target expression, because naming more paths is not
+  finding more machines. See `docs/PACING.md`.
 - Prompt-injection posture: target content, tool output, retrieved knowledge,
   and MCP results are all untrusted; none can change scope, capabilities,
   budgets, findings, verdicts, or evidence. This is already the controller's
@@ -466,6 +471,11 @@ section. Reports never embed artifact bodies by default; they reference them.
 - Secrets: credentials for authenticated testing live in an operator-managed
   store, are injected per request, are redacted from artifacts, and never enter
   a model prompt unless the operator explicitly opts in per credential.
+  **Delivered** in phase 15: a skill names a credential and never holds one, and
+  the name meets the value inside the function that writes bytes to a socket —
+  so the reference, not the secret, is what reaches the artifact, the event log,
+  the proof bundle, and any prompt built from them. Every credential states the
+  hosts it may be sent to. See `docs/CREDENTIALS.md`.
 - Publish a `SECURITY.md` disclosure process (exists) and a documented threat
   model for the sandbox (extend `docs/HARDENING.md` when containers land).
 
@@ -512,6 +522,8 @@ something demonstrable.
 | 11 · Surface discovery **[done]** | 1 | `http.crawl` bounded to the approved scope; discovered endpoints carried on observations; the planner assessing what recon found, with the controller holding every address to the manifest | A run against one approved origin assesses the endpoints it links to, never requests a link outside the scope, and a worker reporting an out-of-scope address has its whole result refused ✔ |
 | 12 · A container run you can check **[done]** | 1 | Worker image identity read before a run, refused when missing, reported when it differs, pinned when published; recorded in the report and in the release artifacts; once-only container startup | `cyrion tools --sandbox container` states the image identity; a machine without it is refused with the build command before an engagement starts; a container engagement completes with parallel workers ✔ |
 | 13 · Every detection is a file **[done]** | 0.5 | `anyOf` alternatives in a check, bounded to 2–8 and one level deep; `web-security-headers` migrated out of the worker | A claim that is a choice rather than a conjunction is expressible in a skill file; no shipped detection is code; the benchmark table is unchanged by the move ✔ |
+| 14 · Pacing **[done]** | 0.5 | `limits` in the manifest, a per-host limiter in the tool gateway shared by every agent, the wait recorded on the accepted event, and the pacing stated in every report | Six agents aimed at one host never exceed its concurrency cap, a planner naming more paths does not buy more of that host, and a spent ceiling is refused with the limit named ✔ |
+| 15 · Credentials **[done]** | 1 | `@cyrion/credentials`, `${cred:name}` references resolved at the send funnel, host-bound credentials, response scrubbing, `cyrion credentials`, and replay against the operator's own store | A check authenticates against a live target while the artifact, the event log, and the proof bundle record the reference rather than the value; a credential bound elsewhere is refused before the request leaves ✔ |
 
 Roughly four months of focused work to a credible public beta. The first three
 phases are the ones that convert the current fixture demo into a real tool;
@@ -529,6 +541,7 @@ packages/sandbox/         NEW container lifecycle + egress policy
 packages/capabilities/    NEW typed tool adapters
 packages/knowledge/       NEW local RAG
 packages/mcp/             NEW client and server
+packages/credentials/     NEW operator credential store
 packages/evidence/        artifacts, hashing, verification
 packages/reporting/       md, json, html, sarif, junit
 skills/                   operator-authored methodology units
@@ -555,7 +568,7 @@ pin the worker image by digest in the release manifest.
 4. **`docs/TERMINAL.md` responsive claims.** ✔ Now accurate, with the pane math
    derived from the terminal width and verified at 84, 100, and 168 columns.
 
-### Delivered in phases 0 through 13
+### Delivered in phases 0 through 15
 
 - `packages/llm`: `ModelClient` interface; `openai-compatible`, `anthropic`, and
   native `ollama` adapters; per-role routing; strict config validation that
@@ -770,6 +783,47 @@ pin the worker image by digest in the release manifest.
   and then dispatched under `http.probe`, which reports no body — `bodyExcludes`
   held against an empty string and would have raised a candidate from a body
   nobody fetched.
+
+- Budgets bound an engagement; nothing bounded what one machine received. A
+  per-host limiter now sits in the tool gateway — the one place a capability can
+  be called from — shared by every agent, because the number that matters is
+  what the host feels rather than what any single worker did. It is keyed on the
+  hostname: two tasks aimed at `/orders` and `/invoices` have not found two
+  machines, and keying on the target expression would have let a planner pace
+  itself out of every limit by naming more paths.
+- Waiting is the normal outcome and is recorded as `waitedMs` on the accepted
+  event, so a slow run has an account of its own time. Only a spent per-host
+  ceiling and a queue deeper than the operator allowed are refused, each naming
+  the limit that caused it. The tool's timeout starts after the wait, so queued
+  time never fails a healthy tool. Repository targets reach no host and are not
+  paced.
+- A manifest may pace a fragile target harder, and a partial `limits` block is
+  refused rather than completed: a limit wide enough to be meaningless reads
+  like a control while behaving like its absence. Every report states the pacing
+  that was in force, because a client asks how hard their server was pushed as a
+  separate question from what the run cost.
+
+- A skill names a credential and never holds one. `${cred:api-token}` in a
+  header is resolved inside the function that writes bytes to a socket, so every
+  layer above it — the evidence artifact, the event log, the proof bundle, and
+  any prompt built from them — carries the reference instead of the secret. That
+  is more useful than a redaction: a reader learns which credential to
+  substitute rather than that something was removed, and a proof bundle stays
+  shareable because `cyrion replay` re-resolves it against whoever is replaying.
+- Every credential states the hosts it may be sent to, so a redirect, a crawled
+  link, or an edited target cannot carry a token somewhere it was never meant to
+  go. An unknown name, a host the credential is not bound to, and a reference
+  with no store loaded are all refused rather than guessed — substituting
+  nothing would send an unauthenticated request whose 401 reads exactly like a
+  finding.
+- The one remaining route out is a target that echoes the value back, so
+  response bodies and headers are scrubbed on the way in, before they become a
+  summary or a prompt. `exposeToModel` is the per-credential opt-in the safety
+  section called for, and it is off by default.
+- `cyrion credentials` lists names, hosts, and whether the model may read each
+  one, and prints no values. There is deliberately no command that writes a
+  credential: an operator's editor and file permissions are a better place for
+  that than an argv the shell records in a history file.
 
 ## 19. Open decisions for the maintainer
 

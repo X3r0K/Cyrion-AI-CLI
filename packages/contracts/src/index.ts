@@ -55,6 +55,44 @@ export interface EngagementBudgets {
   maxCostUsd: number
 }
 
+/**
+ * What one host may be asked to endure, whoever is asking.
+ *
+ * The budgets above bound an engagement; these bound a *host*. The distinction
+ * matters because the damage a swarm does is not spread across the estate, it
+ * lands on whichever machine several workers happened to pick at once. An
+ * engagement of twelve agents inside every budget can still be twelve
+ * simultaneous scanners against one endpoint, which is the failure mode most
+ * likely to take a target down and end an engagement badly.
+ *
+ * The unit is the host rather than the target expression, because a planner
+ * dispatching `/a` and `/b` as two tasks has not found two machines to talk to.
+ */
+export interface EngagementLimits {
+  /** Least time between two tool requests reaching one host. */
+  minRequestGapMs: number
+  /** Tool calls in flight against one host at a time. */
+  maxConcurrentPerTarget: number
+  /** Tool requests one host may receive across the whole engagement. */
+  maxRequestsPerTarget: number
+  /** Longest a call will wait for a slot before it is refused rather than queued. */
+  maxQueueWaitMs: number
+}
+
+/**
+ * Applied when a manifest states no limits of its own.
+ *
+ * Deliberately survivable rather than polite: ten requests a second to one host
+ * with four in flight is well under what a scanner would do unbidden, and the
+ * per-host ceiling stops a loop that never terminates from running all night.
+ */
+export const DEFAULT_ENGAGEMENT_LIMITS: EngagementLimits = {
+  minRequestGapMs: 100,
+  maxConcurrentPerTarget: 4,
+  maxRequestsPerTarget: 2_000,
+  maxQueueWaitMs: 30_000,
+}
+
 export interface EngagementManifest {
   id: string
   name: string
@@ -63,6 +101,8 @@ export interface EngagementManifest {
   mode: "supervised" | "autonomous"
   scope: ScopePolicy
   budgets: EngagementBudgets
+  /** Per-host pacing. Absent means `DEFAULT_ENGAGEMENT_LIMITS`. */
+  limits?: EngagementLimits
 }
 
 export interface TaskSpec {
@@ -564,7 +604,7 @@ export function assertManifest(value: unknown): asserts value is EngagementManif
 
 export function manifestContractError(value: unknown): string | undefined {
   if (!isRecord(value)) return "manifest must be an object"
-  const extra = unexpectedKey(value, ["id", "name", "objective", "profile", "mode", "scope", "budgets"])
+  const extra = unexpectedKey(value, ["id", "name", "objective", "profile", "mode", "scope", "budgets", "limits"])
   if (extra) return `unexpected field ${extra}`
   if (!validIdentifier(value.id)) return "id must be a safe identifier"
   if (!validText(value.name, 256)) return "name must be a non-empty string of at most 256 characters"
@@ -598,6 +638,42 @@ export function manifestContractError(value: unknown): string | undefined {
   if (Number(value.budgets.maxConcurrentAgents) > Number(value.budgets.maxAgents)) {
     return "budgets.maxConcurrentAgents cannot exceed maxAgents"
   }
+  const limitsError = engagementLimitsContractError(value.limits)
+  if (limitsError) return limitsError
+  return undefined
+}
+
+/**
+ * Checks stated limits, and refuses ones that would be worse than none.
+ *
+ * An operator may pace a run harder than the default, and for a fragile target
+ * they should. What they may not do is write a manifest whose limits are wide
+ * enough to be meaningless, because a limit that permits a thousand concurrent
+ * requests reads like a control while behaving like its absence — the reader of
+ * the manifest would be misled, which is worse than the field not being there.
+ */
+export function engagementLimitsContractError(value: unknown, path = "limits"): string | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return `${path} must be an object`
+  const keys = ["minRequestGapMs", "maxConcurrentPerTarget", "maxRequestsPerTarget", "maxQueueWaitMs"]
+  const extra = unexpectedKey(value, keys)
+  if (extra) return `${path} contains unexpected field ${extra}`
+  for (const key of keys) {
+    if (!(key in value)) return `${path}.${key} is required`
+  }
+  if (!Number.isSafeInteger(value.minRequestGapMs) || Number(value.minRequestGapMs) < 0) {
+    return `${path}.minRequestGapMs must be a non-negative safe integer`
+  }
+  if (Number(value.minRequestGapMs) > 60_000) return `${path}.minRequestGapMs cannot exceed 60000`
+  if (!positiveSafeInteger(value.maxConcurrentPerTarget)) {
+    return `${path}.maxConcurrentPerTarget must be a positive safe integer`
+  }
+  if (Number(value.maxConcurrentPerTarget) > 64) return `${path}.maxConcurrentPerTarget cannot exceed 64`
+  if (!positiveSafeInteger(value.maxRequestsPerTarget)) {
+    return `${path}.maxRequestsPerTarget must be a positive safe integer`
+  }
+  if (!positiveSafeInteger(value.maxQueueWaitMs)) return `${path}.maxQueueWaitMs must be a positive safe integer`
+  if (Number(value.maxQueueWaitMs) > 300_000) return `${path}.maxQueueWaitMs cannot exceed 300000`
   return undefined
 }
 
