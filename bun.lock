@@ -31,6 +31,7 @@
       },
       "dependencies": {
         "@cyrion/assessment": "workspace:*",
+        "@cyrion/benchmark": "workspace:*",
         "@cyrion/capabilities": "workspace:*",
         "@cyrion/contracts": "workspace:*",
         "@cyrion/controller": "workspace:*",
@@ -55,11 +56,20 @@
         "@cyrion/skills": "workspace:*",
       },
     },
+    "packages/benchmark": {
+      "name": "@cyrion/benchmark",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+      },
+    },
     "packages/capabilities": {
       "name": "@cyrion/capabilities",
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
+        "@cyrion/knowledge": "workspace:*",
+        "@cyrion/mcp": "workspace:*",
         "@cyrion/sandbox": "workspace:*",
         "@cyrion/scope": "workspace:*",
       },
@@ -82,6 +92,15 @@
       "version": "0.1.0",
       "dependencies": {
         "@cyrion/contracts": "workspace:*",
+      },
+    },
+    "packages/knowledge": {
+      "name": "@cyrion/knowledge",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cyrion/contracts": "workspace:*",
+        "@cyrion/llm": "workspace:*",
+        "@cyrion/skills": "workspace:*",
       },
     },
     "packages/llm": {
@@ -141,6 +160,8 @@
   "packages": {
     "@cyrion/assessment": ["@cyrion/assessment@workspace:packages/assessment"],
 
+    "@cyrion/benchmark": ["@cyrion/benchmark@workspace:packages/benchmark"],
+
     "@cyrion/capabilities": ["@cyrion/capabilities@workspace:packages/capabilities"],
 
     "@cyrion/cli": ["@cyrion/cli@workspace:apps/cli"],
@@ -150,6 +171,8 @@
     "@cyrion/controller": ["@cyrion/controller@workspace:packages/controller"],
 
     "@cyrion/evidence": ["@cyrion/evidence@workspace:packages/evidence"],
+
+    "@cyrion/knowledge": ["@cyrion/knowledge@workspace:packages/knowledge"],
 
     "@cyrion/llm": ["@cyrion/llm@workspace:packages/llm"],
 

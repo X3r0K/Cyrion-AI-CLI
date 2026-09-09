@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { ContainerToolRunner, containerEngineReady } from "@cyrion/sandbox"
+import { resolveEntry } from "@cyrion/capabilities"
+import { ContainerToolRunner, containerEngineReady, inspectWorkerImage, workerImageLabel } from "@cyrion/sandbox"
 
 /**
  * These exercise a real container. They are opt-in because they need a working
@@ -13,6 +14,68 @@ const engine = Bun.which("docker") ? "docker" as const : "podman" as const
 let runner: ContainerToolRunner | undefined
 afterAll(async () => {
   await runner?.close()
+})
+
+describe.skipIf(!enabled)("the image a run would execute in", () => {
+  test("reads the identity under the tag, and says plainly when there is none", async () => {
+    const status = await inspectWorkerImage(engine, image)
+    expect(status.present).toBe(true)
+    expect(status.id).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(workerImageLabel(status)).toContain("sha256:")
+
+    const absent = await inspectWorkerImage(engine, "cyrion/definitely-not-built:0")
+    expect(absent.present).toBe(false)
+    expect(absent.detail).toContain("build-worker.sh")
+  })
+
+  test("refuses to start on an image that is not there, before anything runs", async () => {
+    const missing = new ContainerToolRunner({
+      engine,
+      image: "cyrion/definitely-not-built:0",
+      engagementId: "ENG-MISSING-IMAGE",
+      allowedBinaries: ["id"],
+    })
+    // The engine is never asked to run anything: the refusal names the fix.
+    expect(missing.start()).rejects.toThrow(/is not on this machine/)
+    await missing.close()
+  })
+
+  test("starts once when several workers arrive at the same time", async () => {
+    const shared = new ContainerToolRunner({
+      engine,
+      image,
+      engagementId: "ENG-PARALLEL-START",
+      allowedBinaries: ["id"],
+      egress: { destinations: [{ address: "127.0.0.1" }] },
+    })
+    try {
+      // Workers run in parallel and each starts the sandbox lazily. Two
+      // containers with one engagement's name is a conflict the engine refuses,
+      // so the second arrival has to wait for the first rather than race it.
+      const results = await Promise.all([
+        shared.run({ argv: ["id"], timeoutMs: 20_000, maxOutputBytes: 4_096 }),
+        shared.run({ argv: ["id"], timeoutMs: 20_000, maxOutputBytes: 4_096 }),
+        shared.run({ argv: ["id"], timeoutMs: 20_000, maxOutputBytes: 4_096 }),
+      ])
+      for (const result of results) expect(result.stdout).toContain("uid=1000")
+    } finally {
+      await shared.close()
+    }
+  }, 120_000)
+
+  test("refuses an image that is not the one this release pinned", async () => {
+    const status = await inspectWorkerImage(engine, image)
+    const wrong = new ContainerToolRunner({
+      engine,
+      image,
+      engagementId: "ENG-WRONG-IMAGE",
+      allowedBinaries: ["id"],
+      pin: { image, id: "sha256:" + "0".repeat(64), pinned: true },
+    })
+    expect(status.present).toBe(true)
+    expect(wrong.start()).rejects.toThrow(/pins that image/)
+    await wrong.close()
+  })
 })
 
 describe.skipIf(!enabled)("container sandbox", () => {
@@ -67,4 +130,26 @@ describe.skipIf(!enabled)("container sandbox", () => {
       await unfiltered.close()
     }
   }, 120_000)
+})
+
+describe("pinning addresses for curl", () => {
+  test("puts every pinned address in one entry, IPv4 first, IPv6 bracketed", () => {
+    // Separate --resolve flags for one host and port do not fall back: curl
+    // commits to the first set, which strands a run whose pin answered with an
+    // IPv6 address inside an IPv4-only sandbox.
+    expect(resolveEntry("example.com", "443", ["2606:4700:10::6814:179a", "104.20.23.154"]))
+      .toBe("example.com:443:104.20.23.154,[2606:4700:10::6814:179a]")
+  })
+
+  test("brackets IPv6 because the entry is itself colon-separated", () => {
+    // Unbracketed, curl splits host:port:2606:4700:... on every colon and
+    // misparses the whole entry rather than the address alone.
+    const entry = resolveEntry("app.test", "8443", ["::1"])
+    expect(entry).toBe("app.test:8443:[::1]")
+    expect(entry.split(":").length).toBeGreaterThan(3)
+  })
+
+  test("leaves a single IPv4 address exactly as curl expects it", () => {
+    expect(resolveEntry("app.test", "80", ["10.0.0.7"])).toBe("app.test:80:10.0.0.7")
+  })
 })

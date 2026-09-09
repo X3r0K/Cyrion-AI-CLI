@@ -1,3 +1,10 @@
+import {
+  inspectWorkerImage,
+  workerImageError,
+  workerImageLabel,
+  type WorkerImagePin,
+  type WorkerImageStatus,
+} from "./image"
 import { VERSION_FLAGS, versionLine } from "./local"
 import { spawnBounded } from "./process"
 import { buildEgressRules, describeEgressRules, type EgressPolicy } from "./egress"
@@ -10,6 +17,14 @@ export interface ContainerRunnerOptions {
   image: string
   engagementId: string
   allowedBinaries: readonly string[]
+  /**
+   * Lifts the allowlist, for an engagement that granted `shell.exec`.
+   *
+   * The container is the boundary instead: an unprivileged read-only image with
+   * a default-DROP egress allowlist, holding the tools the image was built with
+   * and nothing from the host.
+   */
+  allowAnyBinary?: boolean
   network?: string
   memory?: string
   cpus?: string
@@ -19,6 +34,12 @@ export interface ContainerRunnerOptions {
   /** Unprivileged by default, so a tool cannot read root-owned files in its own image. */
   user?: string
   egress?: EgressPolicy
+  /**
+   * What the release says this image is. When it names the image being used,
+   * a machine holding something else under that tag is refused rather than
+   * silently measured: the tools inside are part of every finding's provenance.
+   */
+  pin?: WorkerImagePin
   /**
    * Starts the container even when the egress allowlist cannot be installed.
    * The operator is told exactly what is not enforced.
@@ -41,14 +62,18 @@ export class ContainerToolRunner implements ToolRunner {
   readonly #options: ContainerRunnerOptions
   readonly #name: string
   readonly #allowed: ReadonlySet<string>
+  readonly #allowAny: boolean
   readonly #cache = new Map<string, BinaryInfo | undefined>()
   #containerIdValue: string | undefined
+  #imageStatus: WorkerImageStatus | undefined
+  #starting: Promise<void> | undefined
   #egressApplied = false
   #egressDetail = "not requested"
 
   constructor(options: ContainerRunnerOptions) {
     this.#options = options
     this.#allowed = new Set(options.allowedBinaries)
+    this.#allowAny = options.allowAnyBinary === true
     this.#name = `cyrion-${options.engagementId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-")}`
   }
 
@@ -60,9 +85,43 @@ export class ContainerToolRunner implements ToolRunner {
     return this.#egressApplied
   }
 
+  /** The image this runner actually started from, once it has looked. */
+  get imageStatus(): WorkerImageStatus | undefined {
+    return this.#imageStatus
+  }
+
+  /**
+   * Starts the engagement's container, once.
+   *
+   * Workers run in parallel and each one starts the sandbox lazily, so without
+   * this the second task to arrive races the first: both create a container
+   * with the same engagement-derived name, and the engine refuses one of them —
+   * or worse, the second removes the container the first is already using.
+   */
   async start(): Promise<void> {
     if (this.#containerIdValue) return
+    if (!this.#starting) {
+      this.#starting = this.#startOnce().finally(() => {
+        this.#starting = undefined
+      })
+    }
+    return this.#starting
+  }
+
+  async #startOnce(): Promise<void> {
+    if (this.#containerIdValue) return
     const { engine, image } = this.#options
+    // What will execute the tools is checked before anything runs, so a missing
+    // or unexpected image is a sentence an operator can act on rather than an
+    // engine error in the middle of an engagement.
+    this.#imageStatus = await inspectWorkerImage(engine, image)
+    const imageError = workerImageError(this.#imageStatus, this.#options.pin)
+    if (imageError) throw new Error(imageError)
+    await this.#ensureNetwork()
+    // A container left behind by a run that died holds the name. Removing it is
+    // safe: the name is derived from the engagement, and a live one would have
+    // been reused by that engagement rather than started again here.
+    await this.#engine([engine, "rm", "--force", this.#name], 30_000).catch(() => undefined)
     const user = this.#options.user ?? "1000:1000"
     const [uid = "1000", gid = "1000"] = user.split(":")
     const argv = [
@@ -113,11 +172,13 @@ export class ContainerToolRunner implements ToolRunner {
   async run(spec: CommandSpec, signal?: AbortSignal): Promise<CommandResult> {
     const [binary] = spec.argv
     if (!binary) throw new Error("A command needs a binary")
-    if (!this.#allowed.has(binary)) throw new Error(`Binary is not allowed in this engagement: ${binary}`)
+    if (!this.#allowAny && !this.#allowed.has(binary)) {
+      throw new Error(`Binary is not allowed in this engagement: ${binary}`)
+    }
     await this.start()
     const info = await this.lookup(binary)
     if (!info) throw new Error(`${binary} is not present in ${this.#options.image}`)
-    return this.#exec(spec.argv, spec.timeoutMs, spec.maxOutputBytes, spec.env, signal)
+    return this.#exec(spec.argv, spec.timeoutMs, spec.maxOutputBytes, spec.env, signal, spec.onOutput)
   }
 
   async close(): Promise<void> {
@@ -130,7 +191,8 @@ export class ContainerToolRunner implements ToolRunner {
     return {
       kind: "container",
       ready: !!this.#containerIdValue,
-      detail: `${this.#options.engine} container ${this.#name} from ${this.#options.image}`,
+      detail: `${this.#options.engine} container ${this.#name} from `
+        + `${this.#imageStatus ? workerImageLabel(this.#imageStatus) : this.#options.image}`,
       enforced: [
         "capability allowlist and adapter-built argv",
         "read-only root filesystem with a tmpfs work directory",
@@ -140,6 +202,34 @@ export class ContainerToolRunner implements ToolRunner {
         ...(this.#egressApplied ? ["kernel egress allowlist installed from the host"] : []),
       ],
       missing: this.#egressApplied ? [] : [`kernel egress allowlist (${this.#egressDetail})`],
+    }
+  }
+
+  /**
+   * Creates the dedicated bridge the container runs on, if it is not there.
+   *
+   * A named network rather than the default bridge, so the container is not on
+   * the same segment as every other container on the machine, and never `host`
+   * — the egress rules are installed into this namespace and a shared one would
+   * apply them to somebody else's workload.
+   */
+  async #ensureNetwork(): Promise<void> {
+    const network = this.#options.network ?? "cyrion-sandbox"
+    const existing = await this.#engine([this.#options.engine, "network", "inspect", network], 15_000)
+    if (existing.exitCode === 0) return
+    const created = await this.#engine(
+      [this.#options.engine, "network", "create", "--driver", "bridge", network],
+      30_000,
+    )
+    // A parallel run may have created it between the two calls.
+    if (created.exitCode !== 0) {
+      const recheck = await this.#engine([this.#options.engine, "network", "inspect", network], 15_000)
+      if (recheck.exitCode !== 0) {
+        throw new Error(
+          `Could not create the ${network} network: ${diagnostic(created)}. `
+          + `Create it once with \`${this.#options.engine} network create ${network}\`, or pass another with --network.`,
+        )
+      }
     }
   }
 
@@ -206,6 +296,7 @@ export class ContainerToolRunner implements ToolRunner {
     maxOutputBytes = 1_000_000,
     env: Record<string, string> = {},
     signal?: AbortSignal,
+    onOutput?: (chunk: string) => void,
   ): Promise<CommandResult> {
     const environment = Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`])
     const result = await this.#engine(
@@ -213,6 +304,7 @@ export class ContainerToolRunner implements ToolRunner {
       timeoutMs,
       maxOutputBytes,
       signal,
+      onOutput,
     )
     return { ...result, argv, runner: this.kind }
   }
@@ -222,6 +314,7 @@ export class ContainerToolRunner implements ToolRunner {
     timeoutMs: number,
     maxOutputBytes = 1_000_000,
     signal?: AbortSignal,
+    onOutput?: (chunk: string) => void,
   ): Promise<CommandResult> {
     return spawnBounded({
       argv,
@@ -231,6 +324,7 @@ export class ContainerToolRunner implements ToolRunner {
       maxOutputBytes,
       runner: "container",
       ...(signal ? { signal } : {}),
+      ...(onOutput ? { onOutput } : {}),
     })
   }
 }

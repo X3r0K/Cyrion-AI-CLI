@@ -1,3 +1,10 @@
+import {
+  inspectWorkerImage,
+  workerImageDrift,
+  workerImageError,
+  workerImageLabel,
+  type WorkerImagePin,
+} from "./image"
 import { LocalToolRunner } from "./local"
 import { spawnBounded } from "./process"
 import type { ContainerEngine } from "./container"
@@ -67,8 +74,18 @@ export async function containerEngineReady(engine: ContainerEngine): Promise<{ r
   return { ready: true, detail: `${engine} ${result.stdout.trim()}` }
 }
 
-/** Explains what a mode would give this operator, before anything runs. */
-export async function describeSandbox(kind: SandboxKind, host: HostProfile): Promise<SandboxReport> {
+/**
+ * Explains what a mode would give this operator, before anything runs.
+ *
+ * `image` names the worker image a container run would use. Without it the
+ * report can only say the engine answers, which is not the same as being able
+ * to start: an engine with no worker image is ready for nothing.
+ */
+export async function describeSandbox(
+  kind: SandboxKind,
+  host: HostProfile,
+  options: { image?: string; pin?: WorkerImagePin } = {},
+): Promise<SandboxReport> {
   if (kind === "local") {
     const report = new LocalToolRunner({ allowedBinaries: [] }).report()
     return {
@@ -88,20 +105,26 @@ export async function describeSandbox(kind: SandboxKind, host: HostProfile): Pro
     }
   }
   const status = await containerEngineReady(engine)
+  const image = options.image ? await inspectWorkerImage(engine, options.image) : undefined
+  const imageError = image ? workerImageError(image, options.pin) : undefined
+  const drift = image ? workerImageDrift(image, options.pin) : undefined
   const missing: string[] = []
   if (!status.ready) missing.push("container isolation")
+  if (imageError) missing.push(imageError)
   if (!host.nsenter) missing.push("kernel egress allowlist (nsenter is not installed)")
   else if (!host.root) missing.push("kernel egress allowlist (installing it needs root)")
   return {
     kind: "container",
-    ready: status.ready && host.nsenter && host.root,
-    detail: status.detail,
+    ready: status.ready && !imageError && host.nsenter && host.root,
+    detail: `${status.detail}${image ? `. Worker image ${workerImageLabel(image)}` : ""}`
+      + `${drift ? `. ${drift}` : ""}`,
     enforced: status.ready
       ? [
         "read-only root filesystem with a tmpfs work directory",
         "no host mounts and no engine socket",
         "all Linux capabilities dropped",
         "memory, CPU, and process ceilings",
+        ...(image?.present ? [`tools from ${workerImageLabel(image)}`] : []),
         ...(host.nsenter && host.root ? ["kernel egress allowlist installed from the host"] : []),
       ]
       : [],

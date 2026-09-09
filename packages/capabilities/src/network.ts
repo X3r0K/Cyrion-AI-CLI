@@ -1,4 +1,4 @@
-import type { ToolExecutionRequest } from "@cyrion/contracts"
+import type { ToolExecutionRequest, ToolProgress } from "@cyrion/contracts"
 import { evaluateScope, parseTarget } from "@cyrion/scope"
 import type { CapabilityAdapter, CapabilityContext, CapabilityResult } from "./types"
 
@@ -17,6 +17,7 @@ export const netPortscan: CapabilityAdapter = {
     request: ToolExecutionRequest,
     context: CapabilityContext,
     signal: AbortSignal,
+    progress?: ToolProgress,
   ): Promise<CapabilityResult> {
     const decision = evaluateScope(context.scope, request.target)
     if (!decision.allowed) throw new Error(`net.portscan refused: ${decision.reason}`)
@@ -42,6 +43,7 @@ export const netPortscan: CapabilityAdapter = {
       ],
       timeoutMs: Math.min(request.timeoutMs, 300_000),
       maxOutputBytes: Math.min(request.maxOutputBytes, 1_000_000),
+      ...(progress ? { onOutput: (chunk: string) => reportScanProgress(chunk, progress) } : {}),
     }, signal)
 
     if (result.timedOut) throw new Error(`net.portscan timed out after ${request.timeoutMs}ms`)
@@ -70,8 +72,27 @@ export const netPortscan: CapabilityAdapter = {
         runner: result.runner,
       },
       evidence: [evidence],
+      outcome: `${openPorts.reduce((total, host) => total + host.ports.length, 0)} open `
+        + `across ${openPorts.length} host(s) in ${ports}`,
     }
   },
+}
+
+/**
+ * Turns a chunk of grepable nmap output into one line an operator can read.
+ *
+ * A scan of a range is the longest thing Cyrion does, so what it has found so
+ * far is worth more than the raw text it found it in.
+ */
+export function reportScanProgress(chunk: string, progress: ToolProgress): void {
+  const hosts = parseGrepable(chunk)
+  if (hosts.length) {
+    const open = hosts.reduce((total, host) => total + host.ports.length, 0)
+    progress(`${hosts[0]!.host}: ${open} open port(s) so far`)
+    return
+  }
+  const line = chunk.split("\n").map((entry) => entry.trim()).findLast((entry) => entry.length > 0)
+  if (line) progress(line)
 }
 
 interface GrepableHost {
@@ -158,6 +179,7 @@ export const netTls: CapabilityAdapter = {
         runner: result.runner,
       },
       evidence: [evidence],
+      outcome: `${field("Protocol version") ?? "no protocol"} · ${field("Ciphersuite") ?? "no ciphersuite"}`,
     }
   },
 }

@@ -15,7 +15,6 @@ import {
 import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { EngagementSnapshot, EvidenceRef, EvidenceStore } from "@cyrion/contracts"
-import type { CyrionController } from "@cyrion/controller"
 import { renderMarkdownReport } from "@cyrion/reporting"
 import { inspectOpenCodeProviders, readProviderSelection } from "@cyrion/runtime-opencode"
 import {
@@ -29,6 +28,8 @@ import {
   formatMission,
   formatSettings,
   formatSettingsInspector,
+  formatAttack,
+  formatLaunch,
   formatSettingsSidebar,
   formatRootDispatch,
   formatSwarm,
@@ -52,6 +53,15 @@ import {
   viewNavigationDelta,
 } from "./navigation"
 import {
+  createLaunchState,
+  editLaunchField,
+  isLaunchTextField,
+  launchKey,
+  selectedLaunchField,
+  type LaunchState,
+} from "./launch-ui"
+import { defaultScanInput, type ScanInput } from "./scan-config"
+import {
   readGeneralSettings,
   saveGeneralSettings,
   type TerminalSettings,
@@ -68,9 +78,11 @@ import {
   settingsAreDirty,
   valueForField,
 } from "./settings-ui"
+import { attackStream, scrollStream, windowOf } from "./attack-stream"
+import type { EngagementSurface } from "./watch"
 import { theme } from "./theme"
 
-const views: ViewName[] = ["MISSION", "SWARM", "FINDINGS", "EVIDENCE", "SETTINGS"]
+const views: ViewName[] = ["MISSION", "ATTACK", "SWARM", "FINDINGS", "EVIDENCE", "SETTINGS"]
 
 interface EvidencePreview {
   id?: string
@@ -78,12 +90,22 @@ interface EvidencePreview {
   verification: EvidenceVerification
 }
 
+/**
+ * How the terminal closed.
+ *
+ * `scan` is the operator starting the next assessment from Mission: the
+ * terminal never starts one itself, because the engagement it is showing has to
+ * be cancelled and closed first, and only the caller owns that.
+ */
+export type TuiExit = { kind: "closed" } | { kind: "scan"; input: ScanInput }
+
 export async function runTui(
-  controller: CyrionController,
+  controller: EngagementSurface,
   evidenceStore: EvidenceStore,
   runtime: RuntimeDisplay = { mode: "fixture" },
   reportDirectory: string = join(process.cwd(), ".cyrion", "reports"),
-): Promise<void> {
+  launchDefaults: ScanInput = defaultScanInput,
+): Promise<TuiExit> {
   const runtimeDisplay = { ...runtime }
   const generalSettings = readGeneralSettings(Bun.env)
   const providerSelection = readProviderSelection(Bun.env)
@@ -184,6 +206,11 @@ export async function runTui(
   renderer.root.add(app)
 
   let ui: TerminalUiState = createTerminalUiState(controller.snapshot)
+  // The next assessment, drafted under Mission. It survives a trip to another
+  // view, so an operator can check a finding mid-form and come back to it.
+  let launch: LaunchState = createLaunchState(launchDefaults)
+  let launchOpen = false
+  let exit: TuiExit = { kind: "closed" }
   let preview: EvidencePreview = { content: "", verification: "idle" }
   const previewCache = new Map<string, EvidencePreview>()
   let previewRequest = 0
@@ -290,6 +317,10 @@ export async function runTui(
       })
   }
 
+  // Rows the transcript may use, and how long it currently is: the scroll keys
+  // need both, and only the renderer knows them.
+  const streamHeight = (): number => Math.max(8, renderer.terminalHeight - 12)
+  let streamTotal = 0
   let notice = runtimeDisplay.notice
     ? `${sanitizeTerminalText(runtimeDisplay.notice, 200)} — press 5 for Settings`
     : ""
@@ -330,18 +361,24 @@ export async function runTui(
   const applyLayout = (): void => {
     const isWide = renderer.width >= 120
     const isNarrow = renderer.width < 90
-    // Percentages leave one column for each visible gap so no pane is shrunk.
-    left.visible = !isNarrow
-    right.visible = isWide
-    left.width = isWide ? "22%" : "23%"
-    center.width = isWide ? "52%" : isNarrow ? "100%" : "76%"
-    right.width = isWide ? "24%" : "0%"
+    // A folded pane gives its share to the centre, which is where the reading
+    // happens. The terminal width still decides what can be shown at all.
+    const showLeft = !isNarrow && !ui.collapsedLeft
+    const showRight = isWide && !ui.collapsedRight
+    const leftShare = showLeft ? (isWide ? 0.22 : 0.23) : 0
+    const rightShare = showRight ? 0.24 : 0
+    const centerShare = 1 - leftShare - rightShare
+    left.visible = showLeft
+    right.visible = showRight
+    left.width = `${Math.round(leftShare * 100)}%`
+    center.width = `${Math.round(centerShare * 100)}%`
+    right.width = `${Math.round(rightShare * 100)}%`
     layout = {
       isWide,
       isNarrow,
-      leftWidth: paneWidth(isWide ? 0.22 : 0.23),
-      centerWidth: paneWidth(isWide ? 0.52 : isNarrow ? 1 : 0.76),
-      rightWidth: paneWidth(0.24),
+      leftWidth: paneWidth(leftShare || 0.22),
+      centerWidth: paneWidth(centerShare),
+      rightWidth: paneWidth(rightShare || 0.24),
     }
   }
 
@@ -363,13 +400,26 @@ export async function runTui(
     const { isWide, isNarrow, leftWidth, centerWidth, rightWidth } = layout
     const help = formatCommandHelp(rightWidth)
 
-    leftTitle.content = settingsActive ? "SYSTEM PROFILE:" : "AGENT SWARM:"
+    leftTitle.content = `${settingsActive ? "SYSTEM PROFILE:" : "AGENT SWARM:"}  [-]`
     leftText.content = settingsActive
       ? formatSettingsSidebar(settingsEditor, settingsDisplay, runtimeDisplay, leftWidth)
       : formatSwarm(snapshot, ui.activeView === "SWARM" ? ui.selectedTaskId : undefined, leftWidth)
 
     if (ui.activeView === "MISSION") {
-      centerText.content = formatMission(snapshot, runtimeDisplay, centerWidth)
+      centerText.content = launchOpen
+        ? formatLaunch(launch, centerWidth, launchNote(snapshot))
+        : formatMission(snapshot, runtimeDisplay, centerWidth)
+      rightText.content = ui.helpVisible ? help : formatEngagement(snapshot, runtimeDisplay, rightWidth)
+    } else if (ui.activeView === "ATTACK") {
+      // Two lines per entry at worst, so the window asks for half the rows.
+      const lines = attackStream(snapshot)
+      const view = windowOf(lines, {
+        height: Math.max(4, Math.floor(streamHeight() / 2)),
+        offset: ui.streamOffset,
+        following: ui.streamFollowing,
+      })
+      streamTotal = view.total
+      centerText.content = formatAttack(snapshot, view, centerWidth)
       rightText.content = ui.helpVisible ? help : formatEngagement(snapshot, runtimeDisplay, rightWidth)
     } else if (ui.activeView === "SWARM") {
       const board = formatTaskBoard(snapshot, ui.selectedTaskId, centerWidth)
@@ -379,7 +429,7 @@ export async function runTui(
         : stack(board, formatWorkerInspector(snapshot, ui.selectedTaskId, centerWidth))
       rightText.content = ui.helpVisible ? help : dispatch
     } else if (ui.activeView === "FINDINGS") {
-      const list = formatFindings(snapshot, ui.selectedFindingId, centerWidth)
+      const list = formatFindings(snapshot, ui.selectedFindingId, centerWidth, ui.findingFilter)
       const detail = formatFindingDetail(snapshot, ui.selectedFindingId, rightWidth, runtimeDisplay)
       centerText.content = isWide
         ? list
@@ -420,15 +470,22 @@ export async function runTui(
     headerMeta.visible = renderer.width >= 100
     headerEnv.visible = renderer.width >= 80
     shortcutText.visible = renderer.width >= 98
+    const launchActive = launchOpen && ui.activeView === "MISSION"
     shortcutText.content = notice
       ? new StyledText([fg(theme.accentBright)(notice)])
-      : new StyledText([fg(theme.muted)(shortcutHint(ui, snapshot, settingsActive))])
-    prompt.content = ui.inputMode === "chat" ? "root >" : settingsActive ? "set  >" : "root >"
-    prompt.fg = ui.inputMode === "chat" ? theme.accentBright : settingsActive ? theme.warning : theme.accent
-    input.placeholder = ui.inputMode === "setting"
+      : new StyledText([fg(theme.muted)(shortcutHint(ui, snapshot, settingsActive, launchActive))])
+    prompt.content = launchActive ? "scan >" : settingsActive ? "set  >" : "root >"
+    prompt.fg = launchActive
+      ? theme.accentBright
+      : ui.inputMode === "chat" ? theme.accentBright : settingsActive ? theme.warning : theme.accent
+    input.placeholder = ui.inputMode === "filter"
+      ? "Filter findings by id, title, asset, verdict, severity, or skill"
+      : ui.inputMode === "setting" || ui.inputMode === "launch"
       ? "Type a value, Enter to apply, Escape to cancel"
       : ui.inputMode === "chat"
       ? "Ask Root for a concise mission summary"
+      : launchActive
+      ? "Fill the assessment in; press s to start it"
       : settingsActive ? "Use arrows to edit; press s to save" : "Press i to ask Root about this mission"
   }
 
@@ -456,6 +513,47 @@ export async function runTui(
     render()
   }
 
+  /** Opens the footer editor for the target or the attestation. */
+  const beginLaunchEdit = (): void => {
+    const field = selectedLaunchField(launch)
+    if (!isLaunchTextField(field)) return
+    input.value = field === "target" ? launch.input.target : launch.input.attestation ?? ""
+    ui = { ...ui, inputMode: "launch", helpVisible: false }
+    input.focus()
+    launch = { ...launch, message: "Type a value, then press Enter to apply or Escape to cancel." }
+    render()
+  }
+
+  const endLaunchEdit = (apply: boolean): void => {
+    const field = selectedLaunchField(launch)
+    if (apply && isLaunchTextField(field)) launch = editLaunchField(launch, field, input.value)
+    launch = { ...launch, message: undefined }
+    input.value = ""
+    ui = { ...ui, inputMode: "dashboard" }
+    input.blur()
+    render()
+  }
+
+  /**
+   * Hands the operator's next assessment back to the caller.
+   *
+   * Closing the renderer is what cancels this engagement, so the new one never
+   * starts while the old one still holds leases, artifacts, and a state file.
+   */
+  const startLaunch = (chosen: ScanInput): void => {
+    exit = { kind: "scan", input: chosen }
+    renderer.destroy()
+  }
+
+  const endFilter = (apply: boolean): void => {
+    const findingFilter = apply ? input.value.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim().slice(0, 120) : ui.findingFilter
+    input.value = ""
+    input.blur()
+    // The selection may no longer be in the list, so let reconciliation pick one.
+    ui = reconcileTerminalUiState({ ...ui, inputMode: "dashboard", findingFilter }, controller.snapshot)
+    render()
+  }
+
   const setChatMode = (enabled: boolean): void => {
     ui = { ...ui, inputMode: enabled ? "chat" : "dashboard", helpVisible: false }
     if (enabled) input.focus()
@@ -468,13 +566,23 @@ export async function runTui(
       endSettingEdit(true)
       return
     }
+    if (ui.inputMode === "launch") {
+      endLaunchEdit(true)
+      return
+    }
+    if (ui.inputMode === "filter") {
+      endFilter(true)
+      return
+    }
     const value = input.value.trim()
     if (value) controller.operatorMessage(value)
     input.value = ""
     setChatMode(false)
   })
   input.on(RenderableEvents.FOCUSED, () => {
-    if (ui.inputMode === "chat") return
+    // Only an unclaimed footer becomes chat: a settings or launch field focuses
+    // the same input, and sending its value to Root is not what was asked.
+    if (ui.inputMode !== "dashboard") return
     ui = { ...ui, inputMode: "chat", helpVisible: false }
     render()
   })
@@ -491,6 +599,8 @@ export async function runTui(
         key.preventDefault()
         key.stopPropagation()
         if (ui.inputMode === "setting") endSettingEdit(false)
+        else if (ui.inputMode === "launch") endLaunchEdit(false)
+        else if (ui.inputMode === "filter") endFilter(false)
         else setChatMode(false)
       }
       return
@@ -503,13 +613,41 @@ export async function runTui(
       render()
       return
     }
-    if (["1", "2", "3", "4", "5"].includes(key.name)) {
+    if (["1", "2", "3", "4", "5", "6"].includes(key.name)) {
       const view = views[Number(key.name) - 1] ?? "MISSION"
       ui = activateView(ui, view, controller.snapshot)
       key.preventDefault()
       key.stopPropagation()
       render()
       if (view === "SETTINGS") discoverProviders()
+      return
+    }
+    // The assessment form owns the keyboard while it is open, so a key meant
+    // for a field cannot pause the run or export a report behind it. Moving
+    // between views still works: `1`–`6` above, `[` and `]` below.
+    if (launchOpen && ui.activeView === "MISSION" && key.name !== "[" && key.name !== "]") {
+      const action = launchKey(launch, key.name)
+      key.preventDefault()
+      key.stopPropagation()
+      if (action?.kind === "edit") {
+        beginLaunchEdit()
+        return
+      }
+      if (action?.kind === "start") {
+        startLaunch(action.input)
+        return
+      }
+      if (action?.kind === "state") launch = action.state
+      else if (action?.kind === "cancel") launchOpen = false
+      render()
+      return
+    }
+    if (ui.activeView === "MISSION" && key.name === "n") {
+      launchOpen = true
+      ui = { ...ui, helpVisible: false }
+      key.preventDefault()
+      key.stopPropagation()
+      render()
       return
     }
     if (ui.activeView === "SETTINGS" && ["up", "k", "down", "j"].includes(key.name)) {
@@ -530,6 +668,38 @@ export async function runTui(
           ? "No discovered choices are available for this setting yet."
           : "Draft updated. Press s to save or r to revert.",
       }
+      key.preventDefault()
+      key.stopPropagation()
+      render()
+      return
+    }
+    if (key.name === "<" || key.name === ",") {
+      ui = { ...ui, collapsedLeft: !ui.collapsedLeft }
+      applyLayout()
+      key.preventDefault()
+      key.stopPropagation()
+      render()
+      return
+    }
+    if (key.name === ">" || key.name === ".") {
+      ui = { ...ui, collapsedRight: !ui.collapsedRight }
+      applyLayout()
+      key.preventDefault()
+      key.stopPropagation()
+      render()
+      return
+    }
+    if (ui.activeView === "FINDINGS" && key.name === "/") {
+      ui = { ...ui, inputMode: "filter", helpVisible: false }
+      input.value = ui.findingFilter
+      input.focus()
+      key.preventDefault()
+      key.stopPropagation()
+      render()
+      return
+    }
+    if (ui.activeView === "FINDINGS" && key.name === "escape" && ui.findingFilter) {
+      ui = reconcileTerminalUiState({ ...ui, findingFilter: "" }, controller.snapshot)
       key.preventDefault()
       key.stopPropagation()
       render()
@@ -564,6 +734,30 @@ export async function runTui(
       key.stopPropagation()
       render()
       if (ui.activeView === "SETTINGS") discoverProviders()
+      return
+    }
+    if (ui.activeView === "ATTACK" && ["up", "k", "down", "j", "pageup", "pagedown", "home", "end", "f"].includes(key.name)) {
+      const height = Math.max(4, Math.floor(streamHeight() / 2))
+      if (key.name === "f") {
+        ui = { ...ui, streamFollowing: !ui.streamFollowing }
+      } else if (key.name === "home") {
+        ui = { ...ui, streamOffset: 0, streamFollowing: false }
+      } else if (key.name === "end") {
+        ui = { ...ui, streamFollowing: true }
+      } else {
+        const delta = key.name === "up" || key.name === "k" ? -1 : key.name === "down" || key.name === "j" ? 1
+          : key.name === "pageup" ? -height : height
+        const moved = scrollStream(
+          { offset: ui.streamOffset, following: ui.streamFollowing },
+          delta,
+          streamTotal,
+          height,
+        )
+        ui = { ...ui, streamOffset: moved.offset, streamFollowing: moved.following }
+      }
+      key.preventDefault()
+      key.stopPropagation()
+      render()
       return
     }
     if (["up", "k", "down", "j"].includes(key.name)) {
@@ -658,13 +852,30 @@ export async function runTui(
   await rendererDestroyed
   await controller.cancel()
   await run
+  return exit
 }
 
-function shortcutHint(ui: TerminalUiState, snapshot: EngagementSnapshot, settingsActive: boolean): string {
+function shortcutHint(
+  ui: TerminalUiState,
+  snapshot: EngagementSnapshot,
+  settingsActive: boolean,
+  launchActive: boolean,
+): string {
   if (ui.inputMode === "chat") return "[Enter] Send   [Esc/Tab] Navigate"
+  if (launchActive) return "[↑↓] Field  [←→] Change  [space] Toggle  [s] Start  [Esc] Back"
   if (settingsActive) return "[↑↓] Field  [←→] Change  [s] Save  [r] Revert  [d] Discover  [q] Quit"
   if (snapshot.pendingApproval?.status === "pending") return "[a] Approve  [x] Deny  [?] Details  [q] Quit"
+  if (ui.activeView === "MISSION") {
+    return "[n] New scan  [Tab] Focus  [r] Report  [p] Pause  [Ctrl+K] Commands  [q] Quit"
+  }
   return "[Tab] Focus  [Enter] Inspect  [r] Report  [p] Pause  [Ctrl+K] Commands  [q] Quit"
+}
+
+/** What starting another assessment does to the one on screen. */
+function launchNote(snapshot: EngagementSnapshot): string {
+  return snapshot.status === "running" || snapshot.status === "paused"
+    ? "Starting this assessment cancels the engagement running here; its record and artifacts stay on disk."
+    : "This engagement has finished. Its record and artifacts stay on disk."
 }
 
 function panel(

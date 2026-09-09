@@ -3,16 +3,54 @@ import type {
   ScopePolicy,
   ToolAdapter,
   ToolExecutionRequest,
+  ToolProgress,
 } from "@cyrion/contracts"
+import type { Embedder, KnowledgeStore } from "@cyrion/knowledge"
 import type { TargetPin } from "@cyrion/scope"
 import { binariesFor, type ToolRunner } from "@cyrion/sandbox"
+import { httpCrawl } from "./crawl"
 import { dnsLookup } from "./dns"
-import { httpProbe } from "./http"
+import { httpProbe, httpRequest } from "./http"
+import { knowledgeSearch } from "./knowledge"
 import { netPortscan, netTls } from "./network"
 import { pocRun } from "./poc"
+import { repoDeps, repoInventory, repoScan } from "./repo"
+import { sqliTest, vulnScan, webFuzz } from "./scanners"
+import { pythonExec, shellExec } from "./shell"
 import type { CapabilityAdapter, CapabilityContext } from "./types"
 
-export const capabilityAdapters: readonly CapabilityAdapter[] = [dnsLookup, httpProbe, netPortscan, netTls, pocRun]
+export const capabilityAdapters: readonly CapabilityAdapter[] = [
+  dnsLookup,
+  httpProbe,
+  httpRequest,
+  httpCrawl,
+  netPortscan,
+  netTls,
+  knowledgeSearch,
+  pocRun,
+  repoInventory,
+  repoScan,
+  repoDeps,
+  webFuzz,
+  vulnScan,
+  sqliTest,
+  shellExec,
+  pythonExec,
+]
+
+/**
+ * Capabilities with no fixed binary, which the runner's allowlist cannot bound.
+ *
+ * Granting one moves the boundary from "which binary" to the sandbox itself, so
+ * the caller has to know: it is what decides whether the runner is built with
+ * its allowlist lifted, and what makes container the mode a run like this
+ * belongs in.
+ */
+export const UNBOUNDED_CAPABILITIES: readonly string[] = ["shell.exec", "python.exec"]
+
+export function needsUnboundedRunner(capabilities: readonly string[]): boolean {
+  return capabilities.some((capability) => UNBOUNDED_CAPABILITIES.includes(capability))
+}
 
 export interface RegistryOptions {
   runner: ToolRunner
@@ -20,6 +58,15 @@ export interface RegistryOptions {
   evidence: EvidenceStore
   /** Only these capabilities are exposed; the manifest decides, not the registry. */
   capabilities: readonly string[]
+  /** Corpus `knowledge.search` reads. Without it the capability refuses rather than inventing. */
+  knowledge?: KnowledgeStore
+  embedder?: Embedder
+  /**
+   * Adapters this release does not ship — today, operator-approved MCP tools.
+   * They are filtered by `capabilities` like every built-in, and may not answer
+   * as a capability Cyrion implements itself.
+   */
+  extraAdapters?: readonly CapabilityAdapter[]
   /**
    * Evidence identifiers must stay unique across every run of an engagement,
    * because the store refuses to rewrite an ID with different content. The
@@ -40,6 +87,18 @@ export function defaultEvidencePrefix(now = Date.now()): string {
   return `E-${stamp}${random}`
 }
 
+/**
+ * Capabilities a manifest names that no adapter can serve.
+ *
+ * `provided` names what something outside this release answers for — an MCP
+ * server the operator approved — so a granted capability with a real adapter
+ * behind it is not reported as missing.
+ */
+export function unservedCapabilities(granted: readonly string[], provided: readonly string[] = []): string[] {
+  const served = new Set([...capabilityAdapters.map((adapter) => adapter.capability), ...provided])
+  return granted.filter((capability) => !served.has(capability))
+}
+
 export class CapabilityRegistry {
   readonly #adapters = new Map<string, CapabilityAdapter>()
   readonly #context: CapabilityContext
@@ -50,12 +109,23 @@ export class CapabilityRegistry {
     for (const adapter of capabilityAdapters) {
       if (options.capabilities.includes(adapter.capability)) this.#adapters.set(adapter.capability, adapter)
     }
+    for (const adapter of options.extraAdapters ?? []) {
+      if (!options.capabilities.includes(adapter.capability)) continue
+      // Shadowing a built-in would make a finding's provenance a guess, so it is
+      // refused here as well as where the configuration is read.
+      if (this.#adapters.has(adapter.capability)) {
+        throw new Error(`${adapter.capability} is implemented by Cyrion and cannot be provided by another adapter`)
+      }
+      this.#adapters.set(adapter.capability, adapter)
+    }
     this.#prefix = options.evidencePrefix ?? defaultEvidencePrefix()
     this.#context = {
       runner: options.runner,
       scope: options.scope,
       evidence: options.evidence,
       pins: new Map<string, TargetPin>(),
+      ...(options.knowledge ? { knowledge: options.knowledge } : {}),
+      ...(options.embedder ? { embedder: options.embedder } : {}),
       nextEvidenceId: () => `${this.#prefix}-${String(++this.#evidenceSequence).padStart(4, "0")}`,
     }
   }
@@ -79,9 +149,13 @@ export class CapabilityRegistry {
     const adapters: Record<string, ToolAdapter> = {}
     for (const [capability, adapter] of this.#adapters) {
       adapters[capability] = {
-        execute: async (request: ToolExecutionRequest, signal: AbortSignal) => {
-          const result = await adapter.execute(request, this.#context, signal)
-          return { ...result.summary, evidence: result.evidence }
+        execute: async (request: ToolExecutionRequest, signal: AbortSignal, progress?: ToolProgress) => {
+          const result = await adapter.execute(request, this.#context, signal, progress)
+          return {
+            ...result.summary,
+            evidence: result.evidence,
+            ...(result.outcome ? { outcome: result.outcome } : {}),
+          }
         },
       }
     }

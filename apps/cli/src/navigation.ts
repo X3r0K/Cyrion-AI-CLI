@@ -1,11 +1,35 @@
 import type { EngagementSnapshot, EvidenceRef, Finding, TaskRecord } from "@cyrion/contracts"
 import type { ViewName } from "./format"
 
-/** `setting` is chat's sibling: the footer input edits one settings field. */
-export type InputMode = "dashboard" | "chat" | "setting"
+/**
+ * `setting` is chat's sibling: the footer input edits one settings field.
+ * `launch` is the same thing for the new-assessment form under Mission.
+ */
+export type InputMode = "dashboard" | "chat" | "setting" | "filter" | "launch"
 
 export function isTextInputActive(mode: InputMode, inputFocused: boolean): boolean {
-  return mode === "chat" || mode === "setting" || inputFocused
+  return mode !== "dashboard" || inputFocused
+}
+
+/**
+ * Findings matching the operator's filter.
+ *
+ * Matches on what is on screen — identifier, title, asset, verdict, severity,
+ * and the methodology that produced it — so typing `high`, `confirmed`, or a
+ * path all narrow the list the way a reader expects.
+ */
+export function filterFindings(findings: readonly Finding[], filter: string): Finding[] {
+  const needle = filter.trim().toLowerCase()
+  if (!needle) return [...findings]
+  return findings.filter((finding) => [
+    finding.id,
+    finding.title,
+    finding.asset,
+    finding.status,
+    finding.severity,
+    finding.skillId ?? "",
+    finding.reproduction?.verdict ?? "",
+  ].some((field) => field.toLowerCase().includes(needle)))
 }
 
 export function viewNavigationDelta(key: string, settingsActive: boolean): -1 | 1 | undefined {
@@ -20,6 +44,14 @@ export interface TerminalUiState {
   activeView: ViewName
   inputMode: InputMode
   helpVisible: boolean
+  /** First transcript line on screen, and whether new ones pull the view along. */
+  streamOffset: number
+  streamFollowing: boolean
+  /** Narrows the findings list. Empty shows everything. */
+  findingFilter: string
+  /** Side panes the operator has folded away to give the centre more room. */
+  collapsedLeft: boolean
+  collapsedRight: boolean
   selectedTaskId: string | undefined
   selectedFindingId: string | undefined
   selectedEvidenceId: string | undefined
@@ -30,6 +62,11 @@ export function createTerminalUiState(snapshot: EngagementSnapshot): TerminalUiS
     activeView: "MISSION",
     inputMode: "dashboard",
     helpVisible: false,
+    streamOffset: 0,
+    streamFollowing: true,
+    findingFilter: "",
+    collapsedLeft: false,
+    collapsedRight: false,
     selectedTaskId: undefined,
     selectedFindingId: undefined,
     selectedEvidenceId: undefined,

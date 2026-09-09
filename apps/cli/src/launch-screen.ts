@@ -12,14 +12,11 @@ import {
 } from "@opentui/core"
 import { formatLaunch } from "./format"
 import {
-  adjustLaunch,
   createLaunchState,
   editLaunchField,
   isLaunchTextField,
-  launchReadiness,
-  moveLaunchSelection,
+  launchKey,
   selectedLaunchField,
-  toggleCapability,
   type LaunchState,
 } from "./launch-ui"
 import { theme } from "./theme"
@@ -110,7 +107,7 @@ export async function runLaunchScreen(initial: ScanInput): Promise<ScanInput | u
     const field = selectedLaunchField(state)
     if (!isLaunchTextField(field)) return
     editing = true
-    input.value = field === "target" ? state.input.target : state.input.attestation
+    input.value = field === "target" ? state.input.target : state.input.attestation ?? ""
     input.focus()
     state = { ...state, message: "Type a value, then press enter to apply or escape to cancel." }
     render()
@@ -137,32 +134,19 @@ export async function runLaunchScreen(initial: ScanInput): Promise<ScanInput | u
       }
       return
     }
-    if (["up", "k", "down", "j"].includes(key.name)) {
-      state = moveLaunchSelection(state, key.name === "up" || key.name === "k" ? -1 : 1)
-    } else if (["left", "right"].includes(key.name)) {
-      state = adjustLaunch(state, key.name === "left" ? -1 : 1)
-    } else if (key.name === "space") {
-      state = toggleCapability(state)
-    } else if (key.name === "return") {
+    const action = launchKey(state, key.name)
+    if (!action) return
+    if (action.kind === "state") {
+      state = action.state
+    } else if (action.kind === "edit") {
       beginEdit()
       return
-    } else if (key.name === "s") {
-      const readiness = launchReadiness(state)
-      if (!readiness.ready) {
-        state = { ...state, message: readiness.reason ?? "This scan is not ready to start." }
-      } else {
-        resolved = { ...state.input, capabilities: [...state.input.capabilities] }
-        key.preventDefault()
-        key.stopPropagation()
-        renderer.destroy()
-        return
-      }
-    } else if (key.name === "q") {
+    } else {
+      // `start` carries the choice back to the caller; `cancel` carries nothing.
+      if (action.kind === "start") resolved = action.input
       key.preventDefault()
       key.stopPropagation()
       renderer.destroy()
-      return
-    } else {
       return
     }
     key.preventDefault()

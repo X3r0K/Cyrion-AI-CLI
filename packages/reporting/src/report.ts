@@ -25,6 +25,24 @@ export interface ReportContext {
   runtime?: { planner: string; workers: string }
   models?: Array<{ role: string; endpoint: string; model: string }>
   tools?: Array<{ name: string; version: string }>
+  /** The corpus a worker was allowed to consult, and how it was searched. */
+  knowledge?: KnowledgeRecord
+}
+
+/**
+ * Which knowledge base produced this report.
+ *
+ * The corpus version is a digest over the ingested documents, so two reports
+ * citing the same version cited the same text. Without it "we consulted the
+ * standard" names nothing a reader can check.
+ */
+export interface KnowledgeRecord {
+  corpusVersion: string
+  documents: number
+  chunks: number
+  retrieval: "lexical" | "hybrid"
+  sources: Array<{ id: string; license: string; documents: number }>
+  embeddingModel?: string
 }
 
 export interface ReportValidation {
@@ -95,6 +113,7 @@ export interface CommunityReport {
     runtime?: { planner: string; workers: string }
     models?: Array<{ role: string; endpoint: string; model: string }>
     tools?: Array<{ name: string; version: string }>
+    knowledge?: KnowledgeRecord
   }
   limitations: string[]
 }
@@ -166,6 +185,9 @@ export function buildCommunityReport(snapshot: EngagementSnapshot, context: Repo
       ...(context.runtime ? { runtime: { ...context.runtime } } : {}),
       ...(context.models?.length ? { models: context.models.map((entry) => ({ ...entry })) } : {}),
       ...(context.tools?.length ? { tools: context.tools.map((entry) => ({ ...entry })) } : {}),
+      ...(context.knowledge
+        ? { knowledge: { ...context.knowledge, sources: context.knowledge.sources.map((entry) => ({ ...entry })) } }
+        : {}),
     },
     limitations: limitationsFor(snapshot, context),
   }
@@ -208,6 +230,14 @@ function limitationsFor(snapshot: EngagementSnapshot, context: ReportContext): s
       `Discovery and validation both used ${validator.model}. A model that is wrong in one session `
       + "tends to be wrong the same way in the next, so agreement between them is weaker evidence than "
       + "agreement between two different models.",
+    )
+  }
+  if (context.knowledge) {
+    const { knowledge } = context
+    lines.push(
+      `Workers could consult corpus ${knowledge.corpusVersion} (${knowledge.documents} document(s), `
+      + `${knowledge.retrieval} retrieval). Retrieved text informed which checks were run; it is never `
+      + "evidence for a finding, and a claim rests only on what the target returned.",
     )
   }
   if (!context.attestation) {

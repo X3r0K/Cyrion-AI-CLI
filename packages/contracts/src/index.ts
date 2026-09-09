@@ -1,6 +1,39 @@
 export const CONTRACT_VERSION = "cyrion.community/v1" as const
 
-export type AgentRole = "root" | "recon" | "web" | "api" | "validator" | "reporter"
+export type AgentRole =
+  | "root"
+  | "recon"
+  | "web"
+  | "api"
+  | "validator"
+  | "reporter"
+  /**
+   * Specialists a root or a worker can delegate to.
+   *
+   * A role is a lens, not a permission: what an agent may do still comes only
+   * from the capabilities the manifest granted, and naming a role has never
+   * widened one. They exist so a task carries what it is *for*, which is what
+   * makes a delegation tree readable and lets a report say which line of
+   * inquiry produced a finding.
+   */
+  | "injection"
+  | "xss"
+  | "ssrf"
+  | "auth"
+  | "authz"
+  | "idor"
+  | "race"
+  | "logic"
+  | "repo"
+
+export const AGENT_ROLES: readonly AgentRole[] = [
+  "root", "recon", "web", "api", "validator", "reporter",
+  "injection", "xss", "ssrf", "auth", "authz", "idor", "race", "logic", "repo",
+]
+
+/** Roles a task may carry: everything except the root, which delegates rather than works. */
+export const WORKER_ROLES: readonly Exclude<AgentRole, "root">[] =
+  AGENT_ROLES.filter((role): role is Exclude<AgentRole, "root"> => role !== "root")
 export type AgentStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled"
 export type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 export type FindingStatus = "candidate" | "validating" | "confirmed" | "rejected" | "inconclusive"
@@ -82,7 +115,19 @@ export interface Observation {
   summary: string
   source: string
   evidenceIds: string[]
+  /**
+   * Addresses this observation discovered, such as the endpoints a crawl found.
+   *
+   * Naming one is not approval to look at it: the controller checks every entry
+   * against the manifest scope before the result is accepted, and the planner
+   * checks again before anything is dispatched. A worker cannot widen an
+   * engagement by reporting somewhere new.
+   */
+  assets?: string[]
 }
+
+/** Addresses one observation may report as discovered. */
+export const MAX_DISCOVERED_ASSETS = 200
 
 export interface Finding {
   id: string
@@ -115,20 +160,40 @@ export interface FindingReproduction {
 
 
 // ---------------------------------------------------------------------------
-// Proof-of-concept reproduction. A PoC is a bounded, declarative plan the
-// controller can execute, replay, and hand to an operator — never a script a
-// model wrote. Destructive primitives are absent from the vocabulary rather
-// than discouraged in a prompt: there is no request body, no method beyond a
-// read, and no header that carries a credential.
+// Exploitation. A plan is a bounded, declarative sequence the controller can
+// execute, replay, and hand to an operator — still never a script a model
+// wrote, because a plan is what makes a run reproducible and reviewable.
+//
+// What it may do is what an authorized assessment actually needs: any method,
+// a request body, an authenticated session, and a chain long enough to prove
+// something. A test that cannot write, cannot log in, and cannot follow a
+// redirect cannot demonstrate a broken access control, which is most of what a
+// real engagement is for.
+//
+// Two bounds remain, and neither is about what the operator is allowed to
+// prove. Volume is capped — a rate limit and a wall clock — because accidentally
+// exhausting a client's service is the one outcome no engagement wants and no
+// finding needs. And a credential a step sends is redacted in the stored
+// bundle: authenticating is the point, but a proof an operator forwards to a
+// client should not carry their session token.
 // ---------------------------------------------------------------------------
 
 export const POC_VERSION = "cyrion.community/poc-v1" as const
 
-export type PocMethod = "GET" | "HEAD" | "OPTIONS"
+export type PocMethod = "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT" | "PATCH" | "DELETE"
 export type PocVerdict = "reproduced" | "not-reproduced" | "inconclusive"
 
-/** Headers that would smuggle a secret into an artifact an operator will share. */
-export const POC_FORBIDDEN_HEADERS = [
+export const POC_METHODS: readonly PocMethod[] = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]
+
+/**
+ * Headers whose value is a secret.
+ *
+ * Sending one is allowed and necessary — you cannot test authorization without
+ * authenticating. The name is kept in the bundle so a reader knows the request
+ * was authenticated; the value is replaced with a placeholder, so the artifact
+ * proves what happened without handing the reader a live credential.
+ */
+export const POC_SECRET_HEADERS = [
   "authorization",
   "proxy-authorization",
   "cookie",
@@ -137,6 +202,22 @@ export const POC_FORBIDDEN_HEADERS = [
   "x-auth-token",
   "api-key",
 ] as const
+
+export const POC_REDACTED = "[redacted by cyrion]"
+
+/** Whether this header's value is a secret that must not reach a stored artifact. */
+export function isSecretHeader(name: string): boolean {
+  return (POC_SECRET_HEADERS as readonly string[]).includes(name.toLowerCase())
+}
+
+/** Header map with every secret value replaced, for anything written to disk. */
+export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const safe: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers)) {
+    safe[name] = isSecretHeader(name) ? POC_REDACTED : value
+  }
+  return safe
+}
 
 export interface PocExpectation {
   /** The response status must be one of these. */
@@ -151,7 +232,21 @@ export interface PocExpectation {
   bodyIncludes?: string
   /** Text the body must not contain. */
   bodyExcludes?: string
+  /**
+   * Alternatives, of which at least one must hold.
+   *
+   * Everything else stated here must hold as well: `anyOf` widens a claim, it
+   * never replaces it. "Any one of these five headers is absent" is the shape
+   * most methodology actually has, and without it such a claim can only be
+   * written in code. One level deep on purpose — a nested condition tree is not
+   * something a reader can check at a glance, and a proof nobody can read is
+   * not proof.
+   */
+  anyOf?: PocExpectation[]
 }
+
+/** Alternatives one expectation may offer. */
+export const POC_MAX_ALTERNATIVES = 8
 
 export interface PocStep {
   id: string
@@ -159,8 +254,13 @@ export interface PocStep {
   method: PocMethod
   url: string
   headers?: Record<string, string>
+  /** Request body, for the methods that carry one. Recorded in the bundle. */
+  body?: string
   expect: PocExpectation
 }
+
+/** A body large enough for a real payload, bounded so a bundle stays readable. */
+export const POC_MAX_BODY_BYTES = 65_536
 
 export interface PocPlan {
   version: typeof POC_VERSION
@@ -211,6 +311,30 @@ export interface PocBundle {
   script: string
 }
 
+/**
+ * Work a worker thinks should happen next.
+ *
+ * This is how an agent graph grows without a model ever dispatching anything.
+ * A worker states the *shape* of the follow-up — the lens, the objective, the
+ * target, what it would need — and the controller decides whether that task
+ * exists: it assigns the identifier, the parent, and the depth, and it re-checks
+ * the target against scope and the capabilities against the grant.
+ *
+ * Nothing here is chosen by the proposer that could widen the engagement. There
+ * is deliberately no `depth`, no `parentTaskId`, and no `id` field: a worker
+ * that could set its own depth could spawn forever, and one that could set its
+ * own parent could hide where a request came from.
+ */
+export interface TaskProposal {
+  role: Exclude<AgentRole, "root">
+  objective: string
+  target: string
+  capabilities: string[]
+  /** Why this is worth doing, recorded so a delegation tree explains itself. */
+  rationale: string
+  skillId?: string
+}
+
 export interface WorkerResult {
   summary: string
   observations: Observation[]
@@ -218,7 +342,16 @@ export interface WorkerResult {
   evidence: EvidenceRef[]
   report?: string
   usage?: ResourceUsage
+  /**
+   * Follow-up work this worker suggests. Proposals are validated and dispatched
+   * by the controller, or refused with a reason; a worker never learns whether
+   * one was accepted by acting on it.
+   */
+  proposedTasks?: TaskProposal[]
 }
+
+/** Bounded so one worker cannot flood the queue faster than the budget notices. */
+export const MAX_TASK_PROPOSALS = 8
 
 export interface ResourceUsage {
   inputTokens: number
@@ -268,6 +401,7 @@ export type EventType =
   | "task.result.rejected"
   | "tool.request.accepted"
   | "tool.request.completed"
+  | "tool.request.progress"
   | "tool.request.rejected"
   | "budget.updated"
   | "budget.exceeded"
@@ -372,8 +506,15 @@ export interface ToolGateway {
 }
 
 export interface ToolAdapter {
-  execute(request: ToolExecutionRequest, signal: AbortSignal): Promise<unknown>
+  /**
+   * `progress` reports what a long-running tool is doing while it runs. It is
+   * optional on purpose: an adapter that answers quickly should ignore it.
+   */
+  execute(request: ToolExecutionRequest, signal: AbortSignal, progress?: ToolProgress): Promise<unknown>
 }
+
+/** One short, operator-readable note about work still in flight. */
+export type ToolProgress = (note: string) => void
 
 export interface AgentRuntime {
   runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult>
@@ -514,9 +655,41 @@ export function pendingApprovalContractError(value: unknown): string | undefined
   return decision.action.kind === "delegate" ? undefined : "approval decision must delegate tasks"
 }
 
+/**
+ * A proposal, checked for shape only.
+ *
+ * Whether the work may happen is a separate question the controller answers
+ * against the manifest — scope, grant, depth, budget — because those depend on
+ * the engagement and this does not. What is refused here is a proposal that
+ * tried to decide something it does not get to decide: an identifier, a parent,
+ * or a depth.
+ */
+export function taskProposalContractError(value: unknown, path = "proposal"): string | undefined {
+  if (!isRecord(value)) return `${path} must be an object`
+  const extra = unexpectedKey(value, ["role", "objective", "target", "capabilities", "rationale", "skillId"])
+  if (extra) return `${path} contains unexpected field ${extra}`
+  if (!(WORKER_ROLES as readonly string[]).includes(String(value.role))) return `${path}.role is unsupported`
+  if (!validText(value.objective, 1_024)) return `${path}.objective must be a non-empty bounded string`
+  if (!validText(value.target, 2_048)) return `${path}.target must be a non-empty bounded string`
+  if (!validText(value.rationale, 1_024)) return `${path}.rationale must be a non-empty bounded string`
+  if (!Array.isArray(value.capabilities) || value.capabilities.length > 32) {
+    return `${path}.capabilities must be an array of at most 32 entries`
+  }
+  for (const capability of value.capabilities) {
+    if (!validText(capability, 128)) return `${path}.capabilities contains an invalid entry`
+  }
+  if ("skillId" in value && value.skillId !== undefined && !validIdentifier(value.skillId)) {
+    return `${path}.skillId is invalid`
+  }
+  return undefined
+}
+
 export function workerResultContractError(value: unknown): string | undefined {
   if (!isRecord(value)) return "result must be an object"
-  const extra = unexpectedKey(value, ["summary", "observations", "findings", "evidence", "report", "usage"])
+  const extra = unexpectedKey(
+    value,
+    ["summary", "observations", "findings", "evidence", "report", "usage", "proposedTasks"],
+  )
   if (extra) return `result contains unexpected field ${extra}`
   if (!validText(value.summary, 16_384)) return "summary must be a non-empty bounded string"
   if (!Array.isArray(value.observations)) return "observations must be an array"
@@ -536,6 +709,16 @@ export function workerResultContractError(value: unknown): string | undefined {
   for (let index = 0; index < value.evidence.length; index += 1) {
     const error = evidenceRefContractError(value.evidence[index], `evidence[${index}]`)
     if (error) return error
+  }
+  if ("proposedTasks" in value && value.proposedTasks !== undefined) {
+    if (!Array.isArray(value.proposedTasks)) return "proposedTasks must be an array"
+    if (value.proposedTasks.length > MAX_TASK_PROPOSALS) {
+      return `proposedTasks limit exceeded: at most ${MAX_TASK_PROPOSALS}`
+    }
+    for (let index = 0; index < value.proposedTasks.length; index += 1) {
+      const error = taskProposalContractError(value.proposedTasks[index], `proposedTasks[${index}]`)
+      if (error) return error
+    }
   }
   if ("report" in value && !validText(value.report, 1_048_576, true)) return "report must be a bounded string"
   if ("usage" in value) {
@@ -557,7 +740,15 @@ export function assertWorkerResult(value: unknown): asserts value is WorkerResul
 // single request leaves the machine.
 // ---------------------------------------------------------------------------
 
-export const POC_MAX_STEPS = 8
+/**
+ * Steps one plan may hold.
+ *
+ * Eight was enough to reproduce a condition and far too few to demonstrate a
+ * chain: log in, enumerate, escalate, and prove the consequence is already more
+ * than that. Bounded still, so a plan stays something an operator reads before
+ * running it.
+ */
+export const POC_MAX_STEPS = 64
 const POC_HEADER_NAME = /^[A-Za-z][A-Za-z0-9-]{0,63}$/
 
 export function pocPlanContractError(value: unknown): string | undefined {
@@ -589,20 +780,29 @@ export function assertPocPlan(value: unknown): asserts value is PocPlan {
 
 function pocStepContractError(value: unknown, path: string): string | undefined {
   if (!isRecord(value)) return `${path} must be an object`
-  const extra = unexpectedKey(value, ["id", "description", "method", "url", "headers", "expect"])
+  const extra = unexpectedKey(value, ["id", "description", "method", "url", "headers", "body", "expect"])
   if (extra) return `${path} contains unexpected field ${extra}`
   if (!validIdentifier(value.id)) return `${path}.id must be a safe identifier`
   if (!validText(value.description, 512)) return `${path}.description must be a non-empty bounded string`
-  // Reads only. A method that changes state is absent from the vocabulary, so
-  // no plan can ask for one and no runner has to refuse it.
-  if (!["GET", "HEAD", "OPTIONS"].includes(String(value.method))) {
-    return `${path}.method must be GET, HEAD, or OPTIONS`
+  if (!(POC_METHODS as readonly string[]).includes(String(value.method))) {
+    return `${path}.method must be one of ${POC_METHODS.join(", ")}`
   }
   const urlError = pocUrlError(value.url, `${path}.url`)
   if (urlError) return urlError
   if ("headers" in value) {
     const headersError = pocHeadersError(value.headers, `${path}.headers`)
     if (headersError) return headersError
+  }
+  if ("body" in value && value.body !== undefined) {
+    if (typeof value.body !== "string") return `${path}.body must be a string`
+    if (Buffer.byteLength(value.body, "utf8") > POC_MAX_BODY_BYTES) {
+      return `${path}.body exceeds ${POC_MAX_BODY_BYTES} bytes`
+    }
+    // A body on a method that does not carry one is a mistake worth naming: the
+    // request would be sent without it and the step would prove nothing.
+    if (value.method === "GET" || value.method === "HEAD") {
+      return `${path}.body cannot be sent with ${String(value.method)}`
+    }
   }
   return pocExpectationError(value.expect, `${path}.expect`)
 }
@@ -630,10 +830,9 @@ function pocHeadersError(value: unknown, path: string): string | undefined {
   if (entries.length > 8) return `${path} may hold at most 8 headers`
   for (const [name, headerValue] of entries) {
     if (!POC_HEADER_NAME.test(name)) return `${path} contains an invalid header name: ${name}`
-    if ((POC_FORBIDDEN_HEADERS as readonly string[]).includes(name.toLowerCase())) {
-      return `${path} may not carry the credential header ${name.toLowerCase()}; `
-        + "authenticated reproduction needs an operator-managed credential store"
-    }
+    // A credential may be sent. Its value is redacted where the bundle is
+    // written, so authenticating does not put a live token in a shared artifact.
+
     if (typeof headerValue !== "string" || !headerValue.length || headerValue.length > 1_024) {
       return `${path}.${name} must be a bounded string`
     }
@@ -642,12 +841,41 @@ function pocHeadersError(value: unknown, path: string): string | undefined {
   return undefined
 }
 
-function pocExpectationError(value: unknown, path: string): string | undefined {
+/**
+ * The conditions a response either meets or does not.
+ *
+ * Exported because a skill's declarative check asserts in exactly this
+ * vocabulary: one definition of what may be claimed means a check compiles
+ * into a proof step without either side inventing a condition the other
+ * cannot express.
+ */
+export function pocExpectationContractError(value: unknown, path = "expect"): string | undefined {
+  return pocExpectationError(value, path)
+}
+
+/** Header rules for anything Cyrion will send: bounded, and never a credential. */
+export function pocHeadersContractError(value: unknown, path = "headers"): string | undefined {
+  return pocHeadersError(value, path)
+}
+
+function pocExpectationError(value: unknown, path: string, nested = false): string | undefined {
   if (!isRecord(value)) return `${path} must be an object`
   const allowed = ["status", "headersPresent", "headersAbsent", "contentType", "bodyIncludes", "bodyExcludes"]
-  const extra = unexpectedKey(value, allowed)
+  const extra = unexpectedKey(value, nested ? allowed : [...allowed, "anyOf"])
   if (extra) return `${path} contains unexpected field ${extra}`
-  if (!allowed.some((key) => key in value)) return `${path} must state at least one condition`
+  if (!allowed.some((key) => key in value) && !("anyOf" in value)) {
+    return `${path} must state at least one condition`
+  }
+  if ("anyOf" in value) {
+    if (!Array.isArray(value.anyOf) || value.anyOf.length < 2 || value.anyOf.length > POC_MAX_ALTERNATIVES) {
+      return `${path}.anyOf must offer 2 to ${POC_MAX_ALTERNATIVES} alternatives`
+    }
+    for (const [index, alternative] of value.anyOf.entries()) {
+      // Depth one: an alternative states conditions, never further alternatives.
+      const error = pocExpectationError(alternative, `${path}.anyOf[${index}]`, true)
+      if (error) return error
+    }
+  }
   if ("status" in value) {
     if (!Array.isArray(value.status) || !value.status.length || value.status.length > 8) {
       return `${path}.status must name 1 to 8 statuses`
@@ -720,7 +948,7 @@ function taskSpecContractError(value: unknown, path: string): string | undefined
   if (!validIdentifier(value.id)) return `${path}.id must be a safe identifier`
   if (!validText(value.key, 512)) return `${path}.key must be a non-empty bounded string`
   if ("parentTaskId" in value && !validIdentifier(value.parentTaskId)) return `${path}.parentTaskId is invalid`
-  if (!["recon", "web", "api", "validator", "reporter"].includes(String(value.role))) return `${path}.role is unsupported`
+  if (!(WORKER_ROLES as readonly string[]).includes(String(value.role))) return `${path}.role is unsupported`
   if (!validText(value.objective, 8_192)) return `${path}.objective must be a non-empty bounded string`
   if (!validTokenText(value.target, 2_048)) return `${path}.target must be a non-empty bounded string`
   const capabilitiesError = stringListError(value.capabilities, `${path}.capabilities`, { minimum: 1, safe: true })
@@ -738,11 +966,19 @@ function taskSpecContractError(value: unknown, path: string): string | undefined
 
 function observationContractError(value: unknown, path: string): string | undefined {
   if (!isRecord(value)) return `${path} must be an object`
-  const extra = unexpectedKey(value, ["id", "asset", "summary", "source", "evidenceIds"])
+  const extra = unexpectedKey(value, ["id", "asset", "summary", "source", "evidenceIds", "assets"])
   if (extra) return `${path} contains unexpected field ${extra}`
   if (!validIdentifier(value.id)) return `${path}.id is invalid`
   if (!validTokenText(value.asset, 2_048) || !validText(value.summary, 16_384) || !validIdentifier(value.source)) {
     return `${path} contains invalid text or source fields`
+  }
+  if ("assets" in value) {
+    if (!Array.isArray(value.assets) || value.assets.length > MAX_DISCOVERED_ASSETS) {
+      return `${path}.assets must be an array of at most ${MAX_DISCOVERED_ASSETS} entries`
+    }
+    if (value.assets.some((asset) => !validTokenText(asset, 2_048))) {
+      return `${path}.assets contains an invalid address`
+    }
   }
   return stringListError(value.evidenceIds, `${path}.evidenceIds`, { minimum: 1, safe: true })
 }
@@ -876,7 +1112,7 @@ export const taskSpecSchema = {
     id: identifierSchema,
     key: { type: "string", minLength: 1, maxLength: 512 },
     parentTaskId: identifierSchema,
-    role: { enum: ["recon", "web", "api", "validator", "reporter"] },
+    role: { enum: [...WORKER_ROLES] },
     objective: { type: "string", minLength: 1, maxLength: 8_192 },
     target: { type: "string", minLength: 1, maxLength: 2_048 },
     capabilities: { type: "array", minItems: 1, maxItems: 1_000, uniqueItems: true, items: identifierSchema },
@@ -925,7 +1161,8 @@ export const pocPlanSchema = {
         properties: {
           id: identifierSchema,
           description: { type: "string", minLength: 1, maxLength: 512 },
-          method: { enum: ["GET", "HEAD", "OPTIONS"] },
+          method: { enum: [...POC_METHODS] },
+          body: { type: "string", maxLength: POC_MAX_BODY_BYTES },
           url: { type: "string", minLength: 1, maxLength: 2_048 },
           headers: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 1_024 } },
           expect: {
@@ -937,6 +1174,23 @@ export const pocPlanSchema = {
               headersPresent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
               headersAbsent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
               contentType: { type: "string", minLength: 1, maxLength: 256 },
+              anyOf: {
+                type: "array",
+                minItems: 2,
+                maxItems: POC_MAX_ALTERNATIVES,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    status: { type: "array", minItems: 1, maxItems: 8, items: { type: "integer" } },
+                    headersPresent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
+                    headersAbsent: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", maxLength: 64 } },
+                    contentType: { type: "string", minLength: 1, maxLength: 256 },
+                    bodyIncludes: { type: "string", minLength: 1, maxLength: 256 },
+                    bodyExcludes: { type: "string", minLength: 1, maxLength: 256 },
+                  },
+                },
+              },
               bodyIncludes: { type: "string", minLength: 1, maxLength: 256 },
               bodyExcludes: { type: "string", minLength: 1, maxLength: 256 },
             },
@@ -1028,6 +1282,11 @@ export const workerResultSchema = {
           summary: { type: "string", minLength: 1, maxLength: 16_384 },
           source: identifierSchema,
           evidenceIds: evidenceIdListSchema,
+          assets: {
+            type: "array",
+            maxItems: MAX_DISCOVERED_ASSETS,
+            items: { type: "string", minLength: 1, maxLength: 2_048 },
+          },
         },
       },
     },
@@ -1081,6 +1340,27 @@ export const workerResultSchema = {
         inputTokens: { type: "integer", minimum: 0 },
         outputTokens: { type: "integer", minimum: 0 },
         costUsd: { type: "number", minimum: 0 },
+      },
+    },
+    proposedTasks: {
+      type: "array",
+      maxItems: MAX_TASK_PROPOSALS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["role", "objective", "target", "capabilities", "rationale"],
+        properties: {
+          role: { enum: [...WORKER_ROLES] },
+          objective: { type: "string", minLength: 1, maxLength: 1_024 },
+          target: { type: "string", minLength: 1, maxLength: 2_048 },
+          capabilities: {
+            type: "array",
+            maxItems: 32,
+            items: { type: "string", minLength: 1, maxLength: 128 },
+          },
+          rationale: { type: "string", minLength: 1, maxLength: 1_024 },
+          skillId: identifierSchema,
+        },
       },
     },
   },

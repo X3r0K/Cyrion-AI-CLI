@@ -49,6 +49,9 @@ export class FixtureAgentRuntime implements AgentRuntime {
       case "api": return this.#api(task, context)
       case "validator": return this.#validate(task, context)
       case "reporter": return this.#report(context)
+      // Fixtures cover the deterministic demo, not the specialist roles a real
+      // engagement delegates to; those are exercised against the labs instead.
+      default: return this.#web(task, context)
     }
   }
 

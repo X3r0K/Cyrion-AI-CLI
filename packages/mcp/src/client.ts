@@ -204,14 +204,19 @@ export class McpStdioClient {
     stdin.write(encodeFrame({ jsonrpc: JSONRPC_VERSION, id, method, params }))
     stdin.flush?.()
 
+    // The timer is cleared once the answer is in. A pending one keeps the
+    // process alive to its full deadline, so a run that spoke to an MCP server
+    // would sit for the timeout after its last word before it could exit.
+    let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<JsonRpcResponse>((resolve) => {
-      setTimeout(() => resolve({
+      timer = setTimeout(() => resolve({
         jsonrpc: JSONRPC_VERSION,
         id,
         error: { code: -32001, message: `${method} timed out after ${timeoutMs}ms` },
       }), timeoutMs)
     })
     const response = await Promise.race([answered, timeout])
+    clearTimeout(timer)
     this.#pending.delete(id)
     return response
   }

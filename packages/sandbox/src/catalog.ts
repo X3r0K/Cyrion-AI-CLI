@@ -12,6 +12,12 @@ export interface ToolRequirement {
   packages: Partial<Record<PackageManager, string>>
   /** Present in the Cyrion worker image. */
   inImage: boolean
+  /**
+   * No adapter implements this yet. It is listed so the catalog states the
+   * intended shape, and marked so `cyrion tools` cannot advertise something a
+   * manifest would fail on at dispatch.
+   */
+  planned?: boolean
   /** How to get it when no package exists. */
   note?: string
   optional?: boolean
@@ -54,6 +60,13 @@ export const toolCatalog: readonly ToolRequirement[] = [
     inImage: true,
   },
   {
+    capability: "knowledge.search",
+    binary: "",
+    purpose: "Bounded, cited snippets from the operator's local corpus of public standards",
+    packages: {},
+    inImage: true,
+  },
+  {
     capability: "net.portscan",
     binary: "nmap",
     purpose: "Port and service discovery inside an approved range",
@@ -84,13 +97,43 @@ export const toolCatalog: readonly ToolRequirement[] = [
     optional: true,
   },
   {
-    capability: "http.crawl",
-    binary: "katana",
-    purpose: "Endpoint discovery within an approved origin",
-    packages: { brew: "katana" },
+    capability: "vuln.scan",
+    binary: "nuclei",
+    purpose: "Template-driven checks against an approved target",
+    packages: { brew: "nuclei", pacman: "nuclei" },
     inImage: true,
-    note: "go install github.com/projectdiscovery/katana/cmd/katana@latest",
+    note: "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
     optional: true,
+  },
+  {
+    capability: "sqli.test",
+    binary: "sqlmap",
+    purpose: "Injection testing against one approved URL",
+    packages: { apt: "sqlmap", dnf: "sqlmap", pacman: "sqlmap", brew: "sqlmap" },
+    inImage: true,
+    optional: true,
+  },
+  {
+    capability: "shell.exec",
+    binary: "sh",
+    purpose: "Run a command the agent wrote, inside the sandbox, recorded as evidence",
+    packages: {},
+    inImage: true,
+    note: "Part of every POSIX system; nothing to install",
+  },
+  {
+    capability: "python.exec",
+    binary: "python3",
+    purpose: "Write and run a proof-of-concept exploit, stored as the artifact it is",
+    packages: { apt: "python3", dnf: "python3", pacman: "python", zypper: "python3", apk: "python3", brew: "python3" },
+    inImage: true,
+  },
+  {
+    capability: "http.crawl",
+    binary: "",
+    purpose: "Endpoint discovery within an approved origin, from the links a site publishes",
+    packages: {},
+    inImage: true,
   },
   {
     capability: "dns.enum",
@@ -100,6 +143,7 @@ export const toolCatalog: readonly ToolRequirement[] = [
     inImage: true,
     note: "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
     optional: true,
+    planned: true,
   },
   {
     capability: "repo.scan",

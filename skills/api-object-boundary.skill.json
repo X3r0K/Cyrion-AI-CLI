@@ -17,5 +17,16 @@
     "A generic error page returned with status 200 is not object content."
   ],
   "severity": "high",
-  "references": ["https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/"]
+  "references": ["https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/"],
+  "checks": [
+    {
+      "id": "object",
+      "request": { "method": "GET" },
+      "expect": { "status": [200], "contentType": "application/json" },
+      "finding": {
+        "title": "Object endpoint answers an unauthenticated request",
+        "summary": "The approved object endpoint returned object content to a request that carried no credential."
+      }
+    }
+  ]
 }

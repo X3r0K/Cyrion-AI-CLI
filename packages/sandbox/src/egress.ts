@@ -1,5 +1,5 @@
 import type { ScopePolicy } from "@cyrion/contracts"
-import { evaluateAddress, type TargetPin } from "@cyrion/scope"
+import { evaluateAddress, tryParseTarget, type TargetPin } from "@cyrion/scope"
 
 export interface EgressPolicy {
   /** Addresses the engagement pinned, with the ports each may use. */
@@ -66,6 +66,22 @@ export function egressFromPins(policy: ScopePolicy, pins: readonly TargetPin[]):
     }
   }
   return { destinations }
+}
+
+/**
+ * Targets a container cannot reach, and why.
+ *
+ * A container's loopback is its own. A lab on the host's `127.0.0.1` is simply
+ * not there, which is isolation working — but an operator meets it as a
+ * connection refused halfway through a run, so it is worth saying first.
+ */
+export function unreachableFromContainer(targets: readonly string[]): string[] {
+  return targets.filter((expression) => {
+    const parsed = tryParseTarget(expression)
+    if (typeof parsed === "string" || parsed.kind === "repo") return false
+    const host = parsed.host.replace(/^\[|\]$/g, "").toLowerCase()
+    return host === "localhost" || host === "::1" || host.startsWith("127.")
+  })
 }
 
 /** The exact commands an operator would run by hand, for review before applying. */

@@ -1,0 +1,21 @@
+{
+  "version": "cyrion.community/skill-v1",
+  "id": "repo-surface-inventory",
+  "name": "Repository surface inventory",
+  "source": "WSTG-INFO-02",
+  "appliesTo": { "kinds": ["repo"], "capabilities": ["repo.inventory"], "roles": ["recon"] },
+  "objective": "Inventory an approved repository: what it is written in, what it depends on, and where it starts.",
+  "preconditions": ["The approved scope includes a repository root the operator can read"],
+  "steps": [
+    "Walk the approved root, skipping dependency and build directories that hold code the project did not write.",
+    "Record the languages present, the dependency manifests, the entry points, and the files that configure the environment.",
+    "Report the inventory as an observation. Nothing here observes a running system, so nothing here is a finding."
+  ],
+  "expectedEvidence": ["log"],
+  "falsePositives": [
+    "A vendored dependency is not the project's own code; counting it inflates every language total.",
+    "A configuration file's presence is not a leak. Reading one to decide would be reporting, not inventorying."
+  ],
+  "severity": "info",
+  "references": ["https://owasp.org/www-project-web-security-testing-guide/"]
+}

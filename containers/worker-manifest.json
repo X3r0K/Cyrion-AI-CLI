@@ -1,11 +1,18 @@
 {
   "image": "cyrion/kali-worker:0.1",
-  "builtAt": "2026-09-07T21:47:03Z",
+  "base": "vxcontrol/kali-linux:latest",
+  "id": "sha256:7810e719288d81b27866cfdfc33469fa24410e973a55f0d56f071a5b1012b066",
+  "repoDigest": "cyrion/kali-worker@sha256:7810e719288d81b27866cfdfc33469fa24410e973a55f0d56f071a5b1012b066",
+  "pinned": false,
+  "builtAt": "2026-09-09T17:24:36Z",
   "tools": {
+    "curl": "curl 8.21.0 (x86_64-pc-linux-gnu) libcurl/8.21.0 OpenSSL/3.6.3 zlib/1.3.1 brotli/1.1.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.2 libssh2/1.11.1 nghttp2/1.64.0 ngtc",
     "nmap": "Nmap version 7.99 ( https://nmap.org )",
     "openssl": "OpenSSL 3.6.3 9 Jun 2026 (Library: OpenSSL 3.6.3 9 Jun 2026)",
-    "ffuf": "Fuzz Faster U Fool - 2.1.0-dev",
-    "katana": "[INF] Current version: v1.1.2",
-    "dnsx": "[INF] Current Version: 1.2.1"
+    "ffuf": "Fuzz Faster U Fool - v2.1.0-dev",
+    "sqlmap": "1.10.8#stable",
+    "python3": "Python 3.13.11",
+    "katana": "[INF] Current version: v1.3.0",
+    "dnsx": "[INF] Current Version: 1.2.3"
   }
 }

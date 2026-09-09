@@ -78,6 +78,21 @@ export function renderHtmlReport(snapshot: EngagementSnapshot, context: ReportCo
   ${report.environment.tools?.length
     ? table(["Tool", "Version"], report.environment.tools.map((tool) => [tool.name, tool.version]))
     : ""}
+  ${report.environment.knowledge
+    ? `<h3>Knowledge base</h3>
+  <dl>
+    <dt>Corpus</dt><dd>${escapeHtml(report.environment.knowledge.corpusVersion)}
+      — ${report.environment.knowledge.documents} document(s), ${report.environment.knowledge.chunks} chunk(s)</dd>
+    <dt>Retrieval</dt><dd>${escapeHtml(report.environment.knowledge.retrieval)}${
+      report.environment.knowledge.embeddingModel
+        ? ` via ${escapeHtml(report.environment.knowledge.embeddingModel)}`
+        : ""}</dd>
+  </dl>
+  ${table(
+    ["Source", "Licence", "Documents"],
+    report.environment.knowledge.sources.map((source) => [source.id, source.license, String(source.documents)]),
+  )}`
+    : ""}
 </section>
 
 <section>

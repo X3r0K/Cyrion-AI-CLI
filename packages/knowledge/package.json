@@ -1,0 +1,11 @@
+{
+  "name": "@cyrion/knowledge",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@cyrion/contracts": "workspace:*",
+    "@cyrion/llm": "workspace:*",
+    "@cyrion/skills": "workspace:*"
+  }
+}

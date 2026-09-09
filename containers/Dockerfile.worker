@@ -7,7 +7,15 @@
 #
 # Build with containers/build-worker.sh, which verifies every catalogued binary
 # is present and records the versions that produced a run.
-FROM kalilinux/kali-rolling:latest
+#
+# The base is an argument so an operator can point it at their own Kali build —
+# a hardened one, an internally mirrored one, or a distribution that already
+# carries the toolchain. Whatever it is, the build below refuses to tag the
+# result until every catalogued binary answers inside it, so a base that is
+# missing something fails loudly rather than producing a worker that cannot do
+# what the catalog promises.
+ARG BASE_IMAGE=vxcontrol/kali-linux:latest
+FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="Cyrion Community worker"
 LABEL org.opencontainers.image.description="Assessment toolchain for authorized engagements"
@@ -27,7 +35,9 @@ RUN apt-get update \
       jq \
       nmap \
       openssl \
-      python3-minimal \
+      python3 \
+      python3-requests \
+      sqlmap \
       unzip \
       whatweb \
       wordlists \
@@ -36,9 +46,10 @@ RUN apt-get update \
 # Go-distributed scanners are not in the Debian archive; pin them by version.
 ARG KATANA_VERSION=1.1.2
 ARG DNSX_VERSION=1.2.1
+ARG NUCLEI_VERSION=3.4.7
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
-    for tool in "katana:${KATANA_VERSION}" "dnsx:${DNSX_VERSION}"; do \
+    for tool in "katana:${KATANA_VERSION}" "dnsx:${DNSX_VERSION}" "nuclei:${NUCLEI_VERSION}"; do \
       name="${tool%%:*}"; version="${tool##*:}"; \
       url="https://github.com/projectdiscovery/${name}/releases/download/v${version}/${name}_${version}_linux_${arch}.zip"; \
       if curl -fsSL -o "/tmp/${name}.zip" "$url"; then \
@@ -50,10 +61,51 @@ RUN set -eux; \
       rm -f "/tmp/${name}.zip"; \
     done
 
+# Make the base usable by an unprivileged worker.
+#
+# A Kali distribution is built on the assumption that it runs as root. Cyrion
+# runs this container as uid 1000 with every Linux capability dropped, so two
+# things that are fine in the base are fatal here — and both fail at the first
+# tool call rather than at build time, which is the worst place to find them.
+RUN set -eux; \
+    # Go-installed tools often live in root's home, which is mode 700 and
+    # therefore invisible to uid 1000. Put them where an unprivileged worker
+    # can reach them, rather than loosening the permissions on root's home.
+    if [ -d /root/go/bin ]; then \
+      for tool in /root/go/bin/*; do \
+        [ -f "${tool}" ] || continue; \
+        cp "${tool}" "/usr/local/bin/$(basename "${tool}")"; \
+        chmod 0755 "/usr/local/bin/$(basename "${tool}")"; \
+      done; \
+    fi; \
+    # nmap ships with cap_net_raw and friends in its *effective* set. Execing a
+    # file that carries an effective capability fails outright when the process
+    # has no permitted capabilities to match — which is exactly how this
+    # container runs. The adapter uses a TCP connect scan and needs no raw
+    # socket, so the capabilities are dropped here. `cp` does not preserve file
+    # capabilities, which is the whole trick and needs no extra package.
+    if [ -f /usr/lib/nmap/nmap ]; then \
+      cp /usr/lib/nmap/nmap /tmp/nmap.nocap; \
+      mv /tmp/nmap.nocap /usr/lib/nmap/nmap; \
+      chmod 0755 /usr/lib/nmap/nmap; \
+    fi
+
 # Unprivileged by default. The controller also passes --user, so an image that
 # forgets this is still run without root.
-RUN useradd --create-home --home-dir /work --shell /usr/sbin/nologin --uid 1000 pentester \
- && chown -R 1000:1000 /work
+#
+# uid 1000 needs a passwd entry as well as an id: Python's `getpass.getuser()`
+# looks itself up, and sqlmap dies in its own startup without one.
+#
+# Tolerant of a base that already claims uid 1000: several Kali distributions
+# ship their own default user, and failing the build over a name we never
+# needed would make a perfectly good base unusable. What matters is that uid
+# 1000 exists and owns /work, not what it is called.
+RUN set -eux; \
+    if ! getent passwd 1000 >/dev/null; then \
+      useradd --create-home --home-dir /work --shell /usr/sbin/nologin --uid 1000 pentester; \
+    fi; \
+    mkdir -p /work; \
+    chown -R 1000:1000 /work
 
 USER 1000:1000
 WORKDIR /work

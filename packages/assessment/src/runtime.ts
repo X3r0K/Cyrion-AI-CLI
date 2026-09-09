@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import type {
   AgentRuntime,
   EvidenceRef,
@@ -12,8 +11,21 @@ import type {
   TaskSpec,
   WorkerResult,
 } from "@cyrion/contracts"
-import type { Skill } from "@cyrion/skills"
-import { PROTECTION_HEADERS, buildPocPlan, readDiscoveryClaim } from "./poc-plan"
+import { judge } from "@cyrion/capabilities"
+import type { Skill, SkillCheck } from "@cyrion/skills"
+import {
+  checkCapability,
+  checkFindingId,
+  checkFor,
+  checkPlan,
+  checkRequestInput,
+  checkResponse,
+  checkSeverity,
+  checkStep,
+  conditionText,
+  matchedText,
+  short,
+} from "./checks"
 
 /** Shape returned by the http.probe capability, which the gateway has already validated. */
 interface ProbeSummary {
@@ -38,10 +50,50 @@ interface PocSummary {
   evidence?: EvidenceRef[]
 }
 
+/** Shape returned by repo.inventory, which the gateway has already validated. */
+interface RepoSummary {
+  root?: string
+  files?: number
+  truncated?: boolean
+  languages?: Array<{ language: string; files: number }>
+  manifests?: string[]
+  entrypoints?: string[]
+  configuration?: string[]
+  evidence?: EvidenceRef[]
+}
+
+/** Shape returned by knowledge.search, which the gateway has already validated. */
+interface KnowledgeSummary {
+  query?: string
+  mode?: string
+  corpusVersion?: string
+  hits?: Array<{ sourceId: string; title: string; reference: string; heading?: string; snippet: string }>
+  citations?: string[]
+  evidence?: EvidenceRef[]
+}
+
+/** Shape returned by the http.crawl capability. */
+interface CrawlSummary {
+  start?: string
+  pages?: number
+  endpoints?: string[]
+  truncated?: boolean
+  outOfScopeLinks?: number
+  refused?: number
+  evidence?: EvidenceRef[]
+}
+
 interface LookupSummary {
   host?: string
   addresses?: string[]
   literal?: boolean
+  evidence?: EvidenceRef[]
+}
+
+interface ExternalSummary {
+  server?: string
+  tool?: string
+  text?: string
   evidence?: EvidenceRef[]
 }
 
@@ -50,6 +102,13 @@ export interface AssessmentRuntimeOptions {
   /** Wall clock allowed for one capability call. */
   toolTimeoutMs?: number
   maxOutputBytes?: number
+  /**
+   * Capabilities served from outside this release — today, operator-approved
+   * MCP tools. A worker calls one when its skill asked for it and records what
+   * came back; it never interprets it, because nothing here knows what that
+   * tool's answer means.
+   */
+  externalCapabilities?: readonly string[]
 }
 
 /**
@@ -65,11 +124,13 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
   readonly #skills: readonly Skill[]
   readonly #timeoutMs: number
   readonly #maxOutputBytes: number
+  readonly #external: readonly string[]
 
   constructor(options: AssessmentRuntimeOptions) {
     this.#skills = options.skills
     this.#timeoutMs = options.toolTimeoutMs ?? 30_000
     this.#maxOutputBytes = options.maxOutputBytes ?? 500_000
+    this.#external = options.externalCapabilities ?? []
   }
 
   async runTask(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
@@ -99,6 +160,24 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
       })
     }
 
+    if (task.capabilities.includes("repo.inventory")) {
+      const inventory = await this.#call<RepoSummary>(task, context, "repo.inventory", {})
+      evidence.push(...(inventory.evidence ?? []))
+      const languages = (inventory.languages ?? []).slice(0, 3)
+        .map((entry) => `${entry.language} (${entry.files})`)
+        .join(", ")
+      observations.push({
+        id: `O-${context.agentId}-repo`.slice(0, 128),
+        asset: task.target,
+        summary: `Inventoried ${inventory.files ?? 0} file(s)`
+          + `${languages ? `; ${languages}` : ""}`
+          + `${inventory.manifests?.length ? `; ${inventory.manifests.length} dependency manifest(s)` : ""}`
+          + `${inventory.entrypoints?.length ? `; entry points ${inventory.entrypoints.slice(0, 3).join(", ")}` : ""}.`,
+        source: context.agentId,
+        evidenceIds: (inventory.evidence ?? []).map((item) => item.id),
+      })
+    }
+
     if (task.capabilities.includes("http.probe") && task.target.startsWith("http")) {
       const probe = await this.#call<ProbeSummary>(task, context, "http.probe", {})
       evidence.push(...(probe.evidence ?? []))
@@ -113,6 +192,29 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
       })
     }
 
+    if (task.capabilities.includes("http.crawl") && task.target.startsWith("http")) {
+      const crawl = await this.#call<CrawlSummary>(task, context, "http.crawl", {})
+      evidence.push(...(crawl.evidence ?? []))
+      const endpoints = crawl.endpoints ?? []
+      observations.push({
+        id: `O-${context.agentId}-crawl`.slice(0, 128),
+        asset: task.target,
+        summary: `Walked ${crawl.pages ?? 0} page(s) and found ${endpoints.length} endpoint(s) in scope`
+          + `${crawl.outOfScopeLinks ? `; ${crawl.outOfScopeLinks} link(s) left the approved scope and were not followed` : ""}`
+          + `${crawl.refused ? `; ${crawl.refused} did not answer` : ""}`
+          + `${crawl.truncated ? "; the page budget stopped the walk before the site ran out" : ""}.`,
+        source: context.agentId,
+        evidenceIds: (crawl.evidence ?? []).map((item) => item.id),
+        // What was found, for the planner to assess next. The controller holds
+        // every entry to the manifest before this result is accepted.
+        ...(endpoints.length ? { assets: endpoints } : {}),
+      })
+    }
+
+    const external = await this.#consultExternal(task, context)
+    observations.push(...external.observations)
+    evidence.push(...external.evidence)
+
     const withEvidence = observations.filter((observation) => observation.evidenceIds.length)
     return {
       summary: `Inventoried ${task.target} with ${withEvidence.length} recorded observation(s).`,
@@ -124,49 +226,141 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
 
   async #assess(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
     const skill = this.#skills.find((item) => item.id === task.skillId)
+    if (skill?.checks?.length) return this.#runChecks(task, context, skill)
     const probe = await this.#call<ProbeSummary>(task, context, "http.probe", {})
     const evidence = probe.evidence ?? []
     const evidenceIds = evidence.map((item) => item.id)
     if (!evidenceIds.length) throw new Error("http.probe returned no evidence to support a claim")
 
+    const methodology = await this.#consult(task, context, skill)
+
+    // No branch here names a methodology. A skill that states checks is carried
+    // out from its file; one that does not is a methodology for a human to
+    // follow, and this records what the asset answered so they can.
     const findings: Finding[] = []
-    if (task.skillId === "web-security-headers") {
-      const missing = missingProtections(probe)
-      if (missing.length) {
-        findings.push(this.#finding({
-          id: `F-HEADERS-${short(task.target)}`,
-          title: "Missing browser protection headers",
-          summary: `The response omits ${missing.join(", ")}.`,
-          severity: severityFor(skill, "low"),
-          task,
-          context,
-          evidenceIds,
-        }))
-      }
-    } else if (task.skillId === "api-object-boundary" && returnsObjectContent(probe)) {
-      findings.push(this.#finding({
-        id: `F-OBJECT-${short(task.target)}`,
-        title: "Object endpoint answers an unauthenticated request",
-        summary: `An unauthenticated request returned ${probe.status} with ${probe.contentType}.`,
-        severity: severityFor(skill, "high"),
-        task,
-        context,
-        evidenceIds,
-      }))
-    }
 
     return {
       summary: findings.length
         ? `Assessed ${task.target}; ${findings.length} candidate(s) raised with fresh evidence.`
         : `Assessed ${task.target}; behaviour matched the expected policy.`,
-      observations: [{
-        id: `O-${context.agentId}-assess`.slice(0, 128),
+      observations: [
+        {
+          id: `O-${context.agentId}-assess`.slice(0, 128),
+          asset: task.target,
+          summary: `Response ${probe.status ?? "unknown"} recorded for ${skill?.name ?? task.role} review.`,
+          source: context.agentId,
+          evidenceIds,
+        },
+        ...(methodology ? [methodology.observation] : []),
+      ],
+      findings,
+      evidence: [...evidence, ...(methodology?.evidence ?? [])],
+    }
+  }
+
+  /**
+   * Carries out a skill that states its own checks.
+   *
+   * Nothing here knows what the methodology is about. It asks what the file
+   * says to ask, compares the answer against the conditions the file states,
+   * and raises the finding the file describes — which is what lets a
+   * contributed skill detect something this release has never heard of, with
+   * the same evidence discipline as a built-in one.
+   */
+  async #runChecks(task: TaskSpec, context: RuntimeContext, skill: Skill): Promise<WorkerResult> {
+    const observations: Observation[] = []
+    const findings: Finding[] = []
+    const evidence: EvidenceRef[] = []
+
+    for (const check of skill.checks ?? []) {
+      const capability = checkCapability(check, task.capabilities)
+      if (!capability) {
+        throw new Error(
+          `${skill.id} check ${check.id} needs http.request, which ${task.id} was not granted`,
+        )
+      }
+      const summary = await this.#call<Record<string, unknown>>(
+        task,
+        context,
+        capability,
+        checkRequestInput(check),
+      )
+      const captured = (summary.evidence as EvidenceRef[] | undefined) ?? []
+      if (!captured.length) throw new Error(`${capability} returned no evidence to support a claim`)
+      evidence.push(...captured)
+      const evidenceIds = captured.map((item) => item.id)
+
+      const step = checkStep(check, task.target)
+      const response = checkResponse(summary)
+      const outcome = step && response ? judge(step, response, response.truncated) : undefined
+      if (outcome?.met) {
+        findings.push(this.#finding({
+          id: checkFindingId(check, task.target),
+          title: check.finding.title,
+          // The conditions are quoted from the skill, never from the response:
+          // a summary a reader trusts must not be written by the target.
+          summary: `${check.finding.summary} Declared conditions held: ${matchedText(outcome)}.`,
+          severity: checkSeverity(skill, check),
+          task,
+          context,
+          evidenceIds,
+        }))
+      }
+      observations.push({
+        id: `O-${context.agentId}-${check.id}`.slice(0, 128),
         asset: task.target,
-        summary: `Response ${probe.status ?? "unknown"} recorded for ${skill?.name ?? task.role} review.`,
+        summary: `Checked ${check.id} (${conditionText(check)}): `
+          + `${outcome?.met ? "conditions held" : outcome?.conclusive === false || !outcome ? "undecided" : "not met"}.`,
         source: context.agentId,
         evidenceIds,
-      }],
+      })
+    }
+
+    const methodology = await this.#consult(task, context, skill)
+    return {
+      summary: findings.length
+        ? `Assessed ${task.target} with ${skill.id}; ${findings.length} candidate(s) raised with fresh evidence.`
+        : `Assessed ${task.target} with ${skill.id}; no declared condition held.`,
+      observations: [...observations, ...(methodology ? [methodology.observation] : [])],
       findings,
+      evidence: [...evidence, ...(methodology?.evidence ?? [])],
+    }
+  }
+
+  /**
+   * Reads the local corpus for the methodology this task is following.
+   *
+   * The citation lands on an observation rather than on the finding. What a
+   * standard says is not why a target answered the way it did, and folding a
+   * retrieved paragraph into a finding's evidence would let a document stand
+   * where a response belongs. The observation records which text informed the
+   * step; the finding still rests only on what the target returned.
+   */
+  async #consult(
+    task: TaskSpec,
+    context: RuntimeContext,
+    skill: Skill | undefined,
+  ): Promise<{ observation: Observation; evidence: EvidenceRef[] } | undefined> {
+    if (!task.capabilities.includes("knowledge.search")) return undefined
+    // The query is built from operator-authored methodology, never from what
+    // the target returned: a search string derived from a response would be a
+    // way for a target to choose what its assessor reads.
+    const query = `${skill?.name ?? task.role} ${skill?.objective ?? task.objective}`.slice(0, 256)
+    const result = await this.#call<KnowledgeSummary>(task, context, "knowledge.search", { query, k: 3 })
+      .catch(() => undefined)
+    const evidence = result?.evidence ?? []
+    const citations = (result?.citations ?? []).slice(0, 3)
+    if (!result || !evidence.length || !citations.length) return undefined
+    return {
+      observation: {
+        id: `O-${context.agentId}-knowledge`.slice(0, 128),
+        asset: task.target,
+        summary: `Consulted ${citations.length} corpus reference(s) for ${skill?.name ?? task.role}`
+          + ` (${result.mode ?? "lexical"}, corpus ${(result.corpusVersion ?? "unknown").slice(0, 8)}):`
+          + ` ${bounded(citations.join("; "), 240)}.`,
+        source: context.agentId,
+        evidenceIds: evidence.map((item) => item.id),
+      },
       evidence,
     }
   }
@@ -180,36 +374,60 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
     const candidate = context.candidate
     if (!candidate || candidate.id !== task.findingId) throw new Error("Validator received no candidate record")
 
-    if (task.capabilities.includes("poc.run")) {
-      const claim = await readDiscoveryClaim(context.candidateEvidence ?? [], context.evidenceStore)
-      const plan = buildPocPlan(candidate, claim)
-      if (plan) return this.#reproduce(task, context, candidate, plan)
-    }
-    if (!task.capabilities.includes("http.probe")) {
-      throw new Error(`No reproduction capability is granted to ${task.id}`)
+    // A candidate a skill file raised is re-tested from that same file: the
+    // validator reads which check produced the finding and repeats exactly the
+    // conditions it declared, without ever seeing how it was discovered.
+    const declared = checkFor(this.#skills, candidate)
+    if (declared) {
+      if (task.capabilities.includes("poc.run")) {
+        const plan = checkPlan(candidate, declared.check)
+        if (plan) return this.#reproduce(task, context, candidate, plan)
+      }
+      const capability = checkCapability(declared.check, task.capabilities)
+      if (capability) return this.#recheck(task, context, candidate, declared.check, capability)
     }
 
-    const probe = await this.#call<ProbeSummary>(task, context, "http.probe", {})
-    const evidence = probe.evidence ?? []
+    // Every candidate this release can produce came from a check, so one that
+    // cannot be traced back to a statement cannot be re-tested either. Saying so
+    // is the honest answer; guessing at a verdict from a record whose claim
+    // nobody can restate is not.
+    throw new Error(
+      `${candidate.id} names no check this engagement can repeat, so it cannot be validated independently`,
+    )
+  }
+
+  /**
+   * Repeats a declarative check against the asset, and reports what happened.
+   *
+   * The verdict follows the fresh response only. Every declared condition still
+   * holding confirms; one that does not rejects; an answer that could not decide
+   * — a target that did not respond, a body too large to read — is inconclusive
+   * rather than a confident guess in either direction.
+   */
+  async #recheck(
+    task: TaskSpec,
+    context: RuntimeContext,
+    candidate: Finding,
+    check: SkillCheck,
+    capability: string,
+  ): Promise<WorkerResult> {
+    const summary = await this.#call<Record<string, unknown>>(task, context, capability, checkRequestInput(check))
+    const evidence = (summary.evidence as EvidenceRef[] | undefined) ?? []
     if (!evidence.length) throw new Error("Validation produced no fresh evidence")
 
-    let status: Finding["status"] = "inconclusive"
-    let summary = `${candidate.summary} Reproduction was inconclusive.`
-    if (probe.status === undefined) {
-      summary = `${candidate.summary} The asset did not answer during reproduction.`
-    } else if (candidate.skillId === "web-security-headers") {
-      const missing = missingProtections(probe)
-      status = missing.length ? "confirmed" : "rejected"
-      summary = missing.length
-        ? `${candidate.summary} Reproduced independently: ${missing.join(", ")} still absent.`
-        : `${candidate.summary} Independent reproduction found every header present.`
-    } else if (candidate.skillId === "api-object-boundary") {
-      const reproduced = returnsObjectContent(probe)
-      status = reproduced ? "confirmed" : "rejected"
-      summary = reproduced
-        ? `${candidate.summary} Reproduced independently: the endpoint answered ${probe.status} without a credential.`
-        : `${candidate.summary} Independent reproduction was refused by the endpoint.`
-    }
+    const step = checkStep(check, candidate.asset)
+    const response = checkResponse(summary)
+    const outcome = step && response ? judge(step, response, response.truncated) : undefined
+    const detail = bounded((outcome?.detail ?? "").replace(/^(reproduced|not reproduced|inconclusive): /, ""), 240)
+
+    const status: Finding["status"] = !outcome || !outcome.conclusive
+      ? "inconclusive"
+      : outcome.met ? "confirmed" : "rejected"
+    const verdict = status === "confirmed"
+      ? `Reproduced independently: ${detail}.`
+      : status === "rejected"
+        ? `Independent reproduction did not hold: ${detail}.`
+        : `Independent reproduction was inconclusive: ${detail || "the asset did not answer"}.`
 
     return {
       summary: `Validated ${candidate.id}: ${status}.`,
@@ -217,7 +435,7 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
       findings: [{
         ...candidate,
         status,
-        summary,
+        summary: `${candidate.summary} ${verdict}`,
         validatedBy: context.agentId,
         evidenceIds: [...new Set([...candidate.evidenceIds, ...evidence.map((item) => item.id)])],
       }],
@@ -276,6 +494,40 @@ export class CapabilityWorkerRuntime implements AgentRuntime {
       }],
       evidence,
     }
+  }
+
+  /**
+   * Capabilities an operator added from outside this release.
+   *
+   * A built-in capability has a worker that knows what its result means; an MCP
+   * tool does not, so its answer is recorded as exactly what it is — a bounded,
+   * attributed observation citing the artifact — and never becomes a finding.
+   * Nothing is called that the skill did not ask for and the manifest did not
+   * grant, because the task's capability list is the intersection of both.
+   */
+  async #consultExternal(
+    task: TaskSpec,
+    context: RuntimeContext,
+  ): Promise<{ observations: Observation[]; evidence: EvidenceRef[] }> {
+    const observations: Observation[] = []
+    const evidence: EvidenceRef[] = []
+    for (const capability of task.capabilities) {
+      if (!this.#external.includes(capability)) continue
+      const result = await this.#call<ExternalSummary>(task, context, capability, {})
+      const captured = result.evidence ?? []
+      if (!captured.length) continue
+      evidence.push(...captured)
+      observations.push({
+        id: `O-${context.agentId}-${capability.replace(/[^A-Za-z0-9]+/g, "-")}`.slice(0, 128),
+        asset: task.target,
+        summary: `Consulted ${capability}`
+          + `${result.server ? ` (${result.server}/${result.tool ?? "tool"})` : ""}`
+          + `: ${bounded(result.text ?? "", 240)}.`,
+        source: context.agentId,
+        evidenceIds: captured.map((item) => item.id),
+      })
+    }
+    return { observations, evidence }
   }
 
   async #report(task: TaskSpec, context: RuntimeContext): Promise<WorkerResult> {
@@ -340,29 +592,8 @@ function bounded(value: string, maximum = 400): string {
   return clean.length > maximum ? `${clean.slice(0, maximum)}…` : clean || "no detail recorded"
 }
 
-function missingProtections(probe: ProbeSummary): string[] {
-  const present = new Set(probe.headerNames ?? [])
-  return PROTECTION_HEADERS.filter((header) => !present.has(header))
-}
-
 /** Object content, not a generic page: a JSON body returned with a success status. */
-function returnsObjectContent(probe: ProbeSummary): boolean {
-  return probe.status === 200 && !!probe.contentType && probe.contentType.includes("application/json")
-}
-
 function severityFor(skill: Skill | undefined, fallback: Severity): Severity {
   return skill?.severity ?? fallback
 }
 
-/**
- * Deterministic, identifier-safe suffix for a finding id.
- *
- * The readable part is truncated, so a digest of the full target is appended:
- * two sibling endpoints must never collapse onto one finding id, which the
- * controller would reject as a duplicate mid-engagement.
- */
-function short(target: string): string {
-  const clean = target.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
-  const digest = createHash("sha256").update(target).digest("hex").slice(0, 8)
-  return `${clean.slice(0, 20) || "asset"}-${digest}`
-}

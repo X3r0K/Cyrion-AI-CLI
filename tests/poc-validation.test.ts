@@ -2,8 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtemp, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AssessmentRootPlanner, CapabilityWorkerRuntime, buildPocPlan } from "@cyrion/assessment"
-import { CapabilityRegistry, stepBudgetMs } from "@cyrion/capabilities"
+import { AssessmentRootPlanner, CapabilityWorkerRuntime, checkPlan } from "@cyrion/assessment"
+import { CapabilityRegistry, buildStepArgv, redactArgv, redactTranscript, stepBudgetMs } from "@cyrion/capabilities"
 import {
   POC_VERSION,
   pocBundleContractError,
@@ -93,20 +93,28 @@ async function runPoc(
 describe("PoC plan contract", () => {
   const base = headerPlan(`${origin}/`, ["content-security-policy"])
 
-  test("admits reads only, and refuses anything that could change state", () => {
+  test("admits the methods and payloads an exploit needs", () => {
     expect(pocPlanContractError(base)).toBeUndefined()
-    expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, method: "POST" }] }))
-      .toContain("method must be GET, HEAD, or OPTIONS")
-    // There is no body field to smuggle a payload through: an extra key is refused.
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, method }] })).toBeUndefined()
+    }
+    expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, method: "POST", body: "id=1" }] }))
+      .toBeUndefined()
+    expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, method: "TRACE" }] }))
+      .toContain("method must be one of")
+    // A body on a method that cannot carry one would be dropped silently and
+    // the step would prove nothing, so it is named instead.
     expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, body: "id=1" }] }))
-      .toContain("unexpected field body")
+      .toContain("cannot be sent with GET")
   })
 
-  test("refuses credentials, control characters, and a scope pattern in place of a URL", () => {
+  test("sends a credential, and refuses a malformed URL", () => {
+    // Authenticating is the point: authorization cannot be tested without it.
+    // The value is redacted where the bundle is written, not refused here.
     expect(pocPlanContractError({
       ...base,
       steps: [{ ...base.steps[0]!, headers: { Authorization: "Bearer secret" } }],
-    })).toContain("credential header authorization")
+    })).toBeUndefined()
     expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, url: `${origin}/api/*` }] }))
       .toContain("concrete URL")
     expect(pocPlanContractError({ ...base, steps: [{ ...base.steps[0]!, url: `http://user:pw@127.0.0.1/` }] }))
@@ -124,11 +132,56 @@ describe("PoC plan contract", () => {
     expect(stepBudgetMs(2_000, 8)).toBe(1_000)
   })
 
-  test("bounds the run: at most eight steps, each with a distinct id", () => {
-    const many = Array.from({ length: 9 }, (_, index) => ({ ...base.steps[0]!, id: `step${index}` }))
-    expect(pocPlanContractError({ ...base, steps: many })).toContain("1 to 8 steps")
+  test("bounds a chain without cutting it short, each step with a distinct id", () => {
+    // Long enough to log in, enumerate, escalate and prove the consequence;
+    // bounded so a plan stays something an operator reads before running it.
+    const chain = Array.from({ length: 64 }, (_, index) => ({ ...base.steps[0]!, id: `step${index}` }))
+    expect(pocPlanContractError({ ...base, steps: chain })).toBeUndefined()
+    expect(pocPlanContractError({
+      ...base,
+      steps: [...chain, { ...base.steps[0]!, id: "step64" }],
+    })).toContain("1 to 64 steps")
     expect(pocPlanContractError({ ...base, steps: [base.steps[0]!, base.steps[0]!] }))
       .toContain("duplicate step id")
+  })
+})
+
+describe("a credential an exploit sent", () => {
+  test("is redacted everywhere the bundle will be read", () => {
+    const argv = buildStepArgv({
+      id: "s1",
+      description: "Authenticated request",
+      method: "GET",
+      url: `${origin}/api/objects/42`,
+      headers: { Authorization: "Bearer super-secret-token", "X-Trace": "abc" },
+      expect: { status: [200] },
+    }, [])
+    // Sent for real...
+    expect(argv).toContain("Authorization: Bearer super-secret-token")
+    // ...and gone from anything written down.
+    const safe = redactArgv(argv).join(" ")
+    expect(safe).not.toContain("super-secret-token")
+    expect(safe).toContain("Authorization: [redacted by cyrion]")
+    // A header that is not a secret is left alone: the bundle still shows what
+    // the request actually was.
+    expect(safe).toContain("X-Trace: abc")
+  })
+
+  test("is stripped from a credential the server handed back", () => {
+    const transcript = [
+      "HTTP/1.1 302 Found",
+      "Set-Cookie: session=abcd1234; HttpOnly",
+      "Location: /dashboard",
+      "Content-Type: text/html",
+      "",
+      "<html>ok</html>",
+    ].join("\n")
+    const safe = redactTranscript(transcript)
+    // The proof that authentication worked, without a working session in it.
+    expect(safe).not.toContain("abcd1234")
+    expect(safe).toContain("Set-Cookie: [redacted by cyrion]")
+    expect(safe).toContain("Location: /dashboard")
+    expect(safe).toContain("<html>ok</html>")
   })
 })
 
@@ -429,7 +482,7 @@ describe("reproduction provenance", () => {
 })
 
 describe("plan authoring", () => {
-  test("states the claim as a condition, and declines when the record cannot support one", () => {
+  test("states the claim as the skill's own conditions, and declines what it cannot request", () => {
     const candidate: Finding = {
       id: "F-HEADERS-1",
       title: "Missing browser protection headers",
@@ -441,44 +494,26 @@ describe("plan authoring", () => {
       evidenceIds: ["E-1"],
       skillId: "web-security-headers",
     }
-    const plan = buildPocPlan(candidate, { status: 200, headers: { server: "cyrion-lab/1.0" } })!
-    expect(plan.steps[0]!.expect.headersAbsent).toContain("content-security-policy")
-    expect(plan.steps[0]!.expect.status).toEqual([200])
+    const check = {
+      id: "headers",
+      expect: {
+        anyOf: [
+          { headersAbsent: ["content-security-policy"] },
+          { headersAbsent: ["x-frame-options"] },
+        ],
+      },
+      finding: { title: "Missing browser protection headers", summary: "…" },
+    }
 
-    // Every protection was present at discovery: there is no claim left to prove.
-    const hardened = { status: 200, headers: Object.fromEntries(
-      ["content-security-policy", "x-content-type-options", "x-frame-options", "referrer-policy", "strict-transport-security"]
-        .map((name) => [name, "set"]),
-    ) }
-    expect(buildPocPlan(candidate, hardened)).toBeUndefined()
-    expect(buildPocPlan(candidate, undefined)).toBeUndefined()
+    // The plan carries the check unchanged: a bundle cannot prove a condition
+    // the methodology never stated, and cannot quietly drop one either.
+    const plan = checkPlan(candidate, check)!
+    expect(plan.steps).toHaveLength(1)
+    expect(plan.steps[0]!.expect.anyOf).toEqual(check.expect.anyOf)
+    expect(plan.steps[0]!.url).toBe(`${origin}/`)
+    expect(plan.rationale).toContain("any of")
 
     // A repository target has no runtime to reproduce against.
-    expect(buildPocPlan({ ...candidate, asset: "./services/api" }, { status: 200, headers: {} })).toBeUndefined()
+    expect(checkPlan({ ...candidate, asset: "repo:/srv/app" }, check)).toBeUndefined()
   })
-})
-
-describe("cyrion engage", () => {
-  test("runs supervised when the manifest grants poc.run, unless the operator opts out", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "cyrion-engage-"))
-    try {
-      const manifestPath = join(directory, "engagement.json")
-      await Bun.write(manifestPath, JSON.stringify(manifestFor([`${origin}/hardened`])))
-      const run = Bun.spawnSync({
-        cmd: [
-          "bun", "run", join(projectRoot, "apps/cli/src/index.ts"), "engage",
-          "--scope", manifestPath, "--headless", "--sandbox", "local",
-          "--artifacts", join(directory, "artifacts"),
-        ],
-        cwd: projectRoot,
-        env: { ...process.env, CYRION_DEFAULT_MODE: "autonomous" },
-      })
-      const stderr = new TextDecoder().decode(run.stderr)
-      expect(stderr).toContain("poc.run is granted, so this run is supervised")
-      expect(stderr).toContain("Headless supervised runs require --approve-all")
-      expect(run.exitCode).toBe(1)
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
-  }, 60_000)
 })

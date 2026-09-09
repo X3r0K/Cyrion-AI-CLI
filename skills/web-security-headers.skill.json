@@ -4,18 +4,37 @@
   "name": "Transport and browser protection headers",
   "source": "WSTG-CONF-12",
   "appliesTo": { "kinds": ["url"], "capabilities": ["http.probe"], "roles": ["web"] },
-  "objective": "Check whether the approved origin sets the browser protections its responses depend on.",
-  "preconditions": ["The origin returns an HTML response"],
+  "objective": "Check whether the approved origin sets the browser protections a modern site is expected to send.",
+  "preconditions": ["The approved scope includes an HTTP or HTTPS origin"],
   "steps": [
-    "Request the approved origin and capture the full response as evidence.",
-    "Record which of content-security-policy, x-content-type-options, x-frame-options, referrer-policy, and strict-transport-security are absent.",
-    "Report one candidate naming the absent headers; do not report a candidate when every header is present."
+    "Request the approved origin and capture the response headers.",
+    "Compare the headers against the protections a browser relies on: content-security-policy, x-content-type-options, x-frame-options, referrer-policy, and strict-transport-security.",
+    "Report a candidate when any of them is absent, naming the ones that are."
   ],
   "expectedEvidence": ["response"],
   "falsePositives": [
-    "An API that never returns HTML does not need frame protections.",
-    "A proxy in front of the origin may add headers that a direct request does not show."
+    "A gateway or CDN in front of the origin may add these headers before a browser sees them; check the edge, not only the origin.",
+    "An API endpoint that never renders in a browser is not made safer by browser protections, and reporting it as though it were inflates the finding."
   ],
   "severity": "low",
-  "references": ["https://owasp.org/www-project-secure-headers/"]
+  "references": ["https://owasp.org/www-project-web-security-testing-guide/"],
+  "checks": [
+    {
+      "id": "headers",
+      "request": { "method": "GET" },
+      "expect": {
+        "anyOf": [
+          { "headersAbsent": ["content-security-policy"] },
+          { "headersAbsent": ["x-content-type-options"] },
+          { "headersAbsent": ["x-frame-options"] },
+          { "headersAbsent": ["referrer-policy"] },
+          { "headersAbsent": ["strict-transport-security"] }
+        ]
+      },
+      "finding": {
+        "title": "Missing browser protection headers",
+        "summary": "The approved origin answered without the browser protections a modern site is expected to send."
+      }
+    }
+  ]
 }

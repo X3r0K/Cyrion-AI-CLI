@@ -1,8 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import type { ScopePolicy, ToolExecutionRequest } from "@cyrion/contracts"
-import { CapabilityRegistry, defaultEvidencePrefix, planEgress } from "@cyrion/capabilities"
+import {
+  CapabilityRegistry,
+  capabilityAdapters,
+  defaultEvidencePrefix,
+  planEgress,
+  unservedCapabilities,
+} from "@cyrion/capabilities"
 import { MemoryEvidenceStore } from "@cyrion/evidence"
-import { LocalToolRunner, buildEgressRules, describeEgressRules } from "@cyrion/sandbox"
+import { LocalToolRunner, buildEgressRules, describeEgressRules, toolCatalog } from "@cyrion/sandbox"
 
 const lab = Bun.serve({
   port: 0,
@@ -150,5 +156,24 @@ describe("capability adapters", () => {
     const adapters = registry.toolAdapters()
     expect(Object.keys(adapters).sort()).toEqual(["dns.lookup", "http.probe", "net.portscan", "net.tls"])
     expect(registry.requiredBinaries().sort()).toEqual(["nmap", "openssl"])
+  })
+})
+
+describe("capabilities this release can actually serve", () => {
+  test("names a granted capability that no adapter implements", () => {
+    expect(unservedCapabilities(["dns.lookup", "http.probe"])).toEqual([])
+    // Listed in the catalog as the intended shape, but nothing serves it yet.
+    expect(unservedCapabilities(["http.probe", "repo.inventory"])).toEqual([])
+    // web.fuzz has an adapter now; dns.enum is still catalog-only.
+    expect(unservedCapabilities(["http.probe", "web.fuzz", "dns.enum"])).toEqual(["dns.enum"])
+    expect(unservedCapabilities(["shell.exec", "python.exec", "vuln.scan", "sqli.test"])).toEqual([])
+  })
+
+  test("the catalog marks exactly the capabilities without an adapter", () => {
+    const served = new Set(capabilityAdapters.map((adapter) => adapter.capability))
+    for (const tool of toolCatalog) {
+      // A row that says it works must be backed by something that works.
+      expect(tool.planned === true).toBe(!served.has(tool.capability))
+    }
   })
 })

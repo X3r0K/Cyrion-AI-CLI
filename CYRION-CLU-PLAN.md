@@ -202,7 +202,9 @@ opaque target strings. Replace with typed targets and a real scope engine.
   followed; an out-of-scope redirect is recorded as an observation, not chased.
 
 **Per-kind recon.** `url` → probe, crawl, fingerprint, endpoint and parameter
-inventory, auth-surface map. `host` → port and service discovery, TLS
+inventory, auth-surface map. *Delivered so far: probe and crawl. The crawl reads
+the links a site publishes, inside the approved scope, and what it finds becomes
+the assessment's target list.* `host` → port and service discovery, TLS
 inspection, banner and version inventory. `repo` → clone or open, language and
 framework inventory, dependency graph, entrypoints, secret scan, route map.
 Findings from a repo target are **static claims** and must be labelled as such;
@@ -216,7 +218,7 @@ changes how the tool reads to a reviewer.
 
 ## 7. Workstream C — execution: the Kali sandbox
 
-**Image.** `cyrion/kali-worker`, built from a pinned `kalilinux/kali-rolling`
+**Image.** `cyrion/kali-worker`, built from a pinned Kali base (`vxcontrol/kali-linux`)
 digest, non-root `pentester` user, no sudo, tini as PID 1, tool set installed at
 pinned versions with a manifest of versions and checksums emitted at build time
 (that manifest is evidence — every tool invocation records the version it ran).
@@ -280,7 +282,19 @@ references: [ "WSTG-ATHZ-04" ]
 ```
 
 Skills are **trusted operator input** and are injected as task instructions;
-target data stays untrusted and is never promoted to instruction status. Root
+target data stays untrusted and is never promoted to instruction status.
+
+**Delivered.** A skill may also state `checks`: the request to make and the
+conditions that make the answer a finding, in the same vocabulary a PoC step
+uses. One statement then drives discovery, independent validation, and the proof
+bundle, so a contributed methodology runs — and replays — without a worker being
+written for it. Where a check needs a path, a request header, or a body claim it
+asks for `http.request`; the loader refuses a claim the granted capability could
+not decide, a path that leaves the approved target, and a credential header.
+Where a methodology is a choice rather than a conjunction — "any one of these
+five headers is missing" — `anyOf` states it, bounded to 2 to 8 alternatives and
+one level deep so the whole claim stays checkable at a glance. With it, no
+shipped detection is code. Root
 selects skills per task and records the selection in the task record, so the
 report can state which methodology produced each finding. `cyrion skills
 list|show|validate|sync` plus a JSON-schema validator in CI keeps community
@@ -355,28 +369,45 @@ Delivered in this session, all covered by tests:
 - Panel widths derived from the terminal width, applied on resize only, so
   rules and tables stop at their own border at 84, 100, and 168 columns.
 
-Remaining terminal work, in priority order: a scrollable activity/transcript
-pane with follow mode; a findings filter (the concept's `/ Filter findings`,
-implemented rather than drawn); collapsible panels behind the `[-]` affordance
-in the references; live worker output streaming for long-running tools; a
-`cyrion watch` read-only attach for an engagement running headless.
+Delivered since: the **Attack** view — a scrollable transcript with follow mode,
+showing every request, what the target returned, every refusal and its reason,
+and each finding as it changes state. Capability adapters report a bounded
+outcome on `tool.request.completed`, so the exchange is legible without opening
+an artifact.
 
-## 11. Workstream G — knowledge (RAG)
+All of the §10 list is now delivered: the findings filter on `/`, foldable side
+panes on `<` and `>`, progress from long-running tools reported while they work
+and throttled before it reaches the log, and `cyrion watch` — a read-only
+attachment that rejoins the stored snapshot with the event log so every view,
+including the transcript, works against an engagement another process is
+running.
 
-Local-first and small. SQLite plus a vector extension, not a mandatory Postgres.
+## 11. Workstream G — knowledge (RAG) — delivered
+
+Local-first and small. SQLite with FTS5, and vectors as blobs scored in process
+rather than a mandatory vector extension: requiring one would mean an operator
+cannot use their own knowledge base without installing a database first, and a
+corpus of public standards is thousands of chunks, not millions.
 
 - `packages/knowledge`: ingest → chunk → embed → store → search.
-- Public corpora only, ingested by scripts rather than shipped as data:
-  OWASP WSTG/ASVS/API Top 10, CWE, ATT&CK, plus the sandbox tools' own
-  documentation and flags.
-- Embeddings local by default (Ollama), remote optional.
+- Public corpora only, ingested on command rather than shipped as data. Shipped
+  descriptors cover the shipped skills, OWASP WSTG, the API Security Top 10, and
+  ASVS; each pins the exact files it fetches, because a corpus assembled from
+  whatever a site links to today cannot support a citation. CWE and ATT&CK are
+  larger and differently shaped, and are left to an operator descriptor.
+- Embeddings local by default (Ollama), remote optional, and absent is a
+  supported answer rather than a degraded one: search falls back to lexical and
+  says so instead of presenting keyword matches as semantic retrieval.
 - **Retrieval is a capability, not ambient context.** A worker calls
   `knowledge.search(query, k)` and receives bounded snippets with source IDs
   that must be cited in the resulting observation. This keeps the evidence
   discipline intact and prevents a retrieved document from behaving like an
   instruction.
-- `cyrion knowledge sync|status|search` for operators; corpus version recorded
-  in the engagement so a report can state which knowledge base produced it.
+- The citation lands on an observation, never on a finding. A standard explains
+  why a check ran; it never stands in for what the target returned.
+- `cyrion knowledge sync|status|search|forget` for operators; corpus version
+  recorded in the engagement so a report can state which knowledge base produced
+  it.
 
 ## 12. Workstream H — MCP, both directions
 
@@ -391,6 +422,15 @@ the gateway per call, or it is not enabled.
 `get_evidence`, and `render_report` so other agents and IDEs can drive Cyrion.
 Read-only by default; starting an engagement requires an explicit flag and a
 scope lock. This is the cheapest adoption lever in the plan.
+
+**Delivered.** `--allow-start` serves the engagement named by `--scope` and
+`--scope-lock`, and the caller starts it by repeating the attestation the lock
+records — it chooses nothing else, so a peer can release authorized work but
+never author it. On the client side, each allowed tool becomes a capability in
+the registry, filtered by the manifest grant, called through the gateway, and
+recorded as evidence plus a cited observation. An MCP tool may not answer as a
+built-in capability, and because its server runs on the host rather than in the
+sandbox, a container run refuses one unless the operator accepts that explicitly.
 
 ## 13. Workstream I — reporting
 
@@ -465,7 +505,13 @@ something demonstrable.
 | 4 · Real assessment **[done]** | 3 | `cyrion engage`, `@cyrion/skills` with a starter pack, `@cyrion/assessment` (skill-driven planner and capability-backed workers), and a controlled lab fixture | A lab run yields confirmed findings with fresh independent validation evidence, no false positive against the correct endpoints, and zero scope violations ✔ |
 | 5 · PoC validation **[done]** | 2 | `poc.run`, PoC bundles, `cyrion replay`, supervised default | Every confirmed finding replays from its bundle on a clean machine ✔ |
 | 6 · Reporting and MCP **[done]** | 2 | HTML/SARIF/JUnit, `cyrion ci`, MCP client and server | CI gating demo and an MCP-driven engagement from a second agent ✔ |
-| 7 · Public beta | 2 | Benchmarks published, packaging, docs, contribution guide, release artifacts | Clean-machine install reproduces the published lab numbers |
+| 7 · Public beta **[done]** | 2 | Benchmarks published, packaging, docs, contribution guide, release artifacts | Clean-machine install reproduces the published lab numbers ✔ |
+| 8 · Knowledge **[done]** | 1.5 | `packages/knowledge` (ingest, chunk, embed, store, search), `knowledge.search` as a gateway capability, `cyrion knowledge` (sync, status, search, forget), corpus version in every report | A worker consults the corpus and cites it; no corpus artifact ever backs a finding; a granted capability with no corpus is refused before the run starts ✔ |
+| 9 · MCP both directions **[done]** | 1 | `start_engagement` behind `--allow-start` and a scope lock; MCP tools registered into the capability registry as capabilities workers call through; MCP provenance in the report | Another agent starts the operator's prepared engagement by repeating the lock's attestation and watches it complete; a worker calls an approved MCP tool through the gateway and records a cited observation, never a finding ✔ |
+| 10 · Executable skills **[done]** | 1.5 | Declarative `checks` in the skill format; `http.request`; one statement driving discovery, validation, and the proof bundle; the shipped object-boundary skill migrated into its file | A skill added as a file alone raises a candidate, is independently validated with fresh evidence, and replays from its bundle — with no change to any worker; the benchmark table is unchanged by moving a built-in detection into its file ✔ |
+| 11 · Surface discovery **[done]** | 1 | `http.crawl` bounded to the approved scope; discovered endpoints carried on observations; the planner assessing what recon found, with the controller holding every address to the manifest | A run against one approved origin assesses the endpoints it links to, never requests a link outside the scope, and a worker reporting an out-of-scope address has its whole result refused ✔ |
+| 12 · A container run you can check **[done]** | 1 | Worker image identity read before a run, refused when missing, reported when it differs, pinned when published; recorded in the report and in the release artifacts; once-only container startup | `cyrion tools --sandbox container` states the image identity; a machine without it is refused with the build command before an engagement starts; a container engagement completes with parallel workers ✔ |
+| 13 · Every detection is a file **[done]** | 0.5 | `anyOf` alternatives in a check, bounded to 2–8 and one level deep; `web-security-headers` migrated out of the worker | A claim that is a choice rather than a conjunction is expressible in a skill file; no shipped detection is code; the benchmark table is unchanged by the move ✔ |
 
 Roughly four months of focused work to a credible public beta. The first three
 phases are the ones that convert the current fixture demo into a real tool;
@@ -509,7 +555,7 @@ pin the worker image by digest in the release manifest.
 4. **`docs/TERMINAL.md` responsive claims.** ✔ Now accurate, with the pane math
    derived from the terminal width and verified at 84, 100, and 168 columns.
 
-### Delivered in phases 0 through 6
+### Delivered in phases 0 through 13
 
 - `packages/llm`: `ModelClient` interface; `openai-compatible`, `anthropic`, and
   native `ollama` adapters; per-role routing; strict config validation that
@@ -613,9 +659,117 @@ pin the worker image by digest in the release manifest.
   with a scrubbed environment and an explicit tool allowlist mapped to
   capability names the manifest must already grant. The integration test drives
   Cyrion's server with Cyrion's own client over a real subprocess.
-- Not yet: starting an engagement over MCP (it needs a scope lock the server
-  does not hold), and registering MCP tools into the capability registry that
-  workers call through.
+- Container mode reads the identity of the image it will execute in — the ID,
+  and the registry digest when there is one — refuses a missing image before the
+  run with the command that fixes it, reports one that differs from the release
+  record, and refuses it outright once an image is published and pinned. The
+  identity is recorded in the report beside the tool versions and shipped with
+  the release artifacts.
+- Fixed a start race in the container runner: parallel workers each started the
+  sandbox lazily, so two of them created a container with the same
+  engagement-derived name. Startup is once-only now, and a test fails without it.
+
+- `http.crawl` turns one approved origin into the inventory the skills are run
+  against: links the site published, bounded by pages, depth, and a gap between
+  requests, with no wordlist and no path guessing. A link outside the scope is
+  counted and never followed.
+- A discovered address is a report, not a permission. An observation may carry
+  what it found, the controller refuses a result naming anything outside the
+  manifest, and the planner checks again before dispatching — so widening an
+  engagement takes changing the manifest, not finding a link.
+- Implemented in Cyrion rather than through katana, because `--sandbox local`
+  has to keep working on a machine with nothing installed; the catalog now says
+  so instead of listing it as planned.
+
+- A skill carries itself out. `checks` state the request and the conditions that
+  make an answer a finding; the worker runs them without knowing what the
+  methodology is about, and adding a detection is adding a file. The same
+  statement is re-tested by the validator from the record alone and compiled into
+  the proof bundle, so a contributed skill cannot disagree with itself.
+- `http.request` gives a check a typed request and a readable answer — a path
+  under the approved target, chosen headers, the response body — re-checked
+  against scope before it is sent and captured in full as evidence.
+- The shipped object-boundary skill moved from three branches in the worker into
+  its own file with no change to its identifier, its verdicts, or the published
+  benchmark table.
+
+- `mcp serve --allow-start` completes the server side: the engagement comes from
+  the operator's manifest and scope lock, the caller repeats the lock's
+  attestation to release it, an invented one is refused, and the live controller
+  answers every read tool while it runs.
+- An approved MCP tool is a capability a worker calls through the gateway. The
+  manifest grant, the `mcp.json` allowlist, and a skill's requirement all have to
+  agree; the exchange is stored as evidence before a bounded summary is returned;
+  the worker records a cited observation and never a finding. A built-in
+  capability cannot be redefined by a server, and a container run refuses a
+  host-side MCP tool unless the operator accepts the gap in the allowlist.
+- Fixed the MCP client keeping the process alive for a whole request timeout
+  after its last answer, which had made every call cost 30 seconds at exit.
+- `@cyrion/benchmark` scores a run against ground truth kept in the labs rather
+  than in the code being measured, so the benchmark can fail. Only confirmed
+  findings count as claims — a candidate nobody validated is not an assertion —
+  and `inconclusive` gets its own column instead of being folded into either
+  side. Precision, recall, and inconclusive rate are reported **per class**, so
+  one weak methodology cannot hide behind a strong one.
+- Three labs, each making a different number honest: known issues for recall, a
+  correct application for precision, and one that answers inconsistently, where
+  a confirmed finding would be a guess and the harness fails the run for it.
+- `cyrion bench` publishes `BENCHMARKS.md` with the Cyrion and fixture versions,
+  the planner, workers, and sandbox that produced it, and a section stating what
+  the numbers do not say. It exits non-zero on a scope violation.
+- Verified: two runs produce an identical table, and breaking one skill dropped
+  recall to 33% with the per-class row naming the methodology that failed.
+- `CONTRIBUTING.md` states the invariants a change may not weaken, how to add a
+  skill with its false positives, and how to add a lab so a new detection has
+  its precision measured rather than asserted.
+
+- `@cyrion/knowledge`: ingest → chunk → embed → store → search over SQLite with
+  an FTS5 index. Chunking is deterministic and heading-aware, so the same bytes
+  always produce the same chunk identifiers and a citation made against an
+  earlier sync still resolves to the paragraph it named.
+- Retrieval is a capability rather than ambient context. `knowledge.search` runs
+  through the tool gateway under a manifest grant, captures the whole retrieval
+  as evidence before returning, and hands back at most eight snippets of at most
+  600 characters, each carrying the reference to cite. The query is rewritten
+  into terms first, so FTS5's operator grammar is unreachable from a string a
+  model or a target produced.
+- The citation lands on an observation, never on a finding: a standard explains
+  why a check ran and never stands in for what the target returned. A test
+  asserts that no corpus artifact appears in any finding's evidence.
+- Skills never require `knowledge.search`. A skill that did would stop applying
+  wherever nobody ran a sync, which would make coverage depend on whether an
+  operator downloaded a standard; the planner adds retrieval when the manifest
+  allows it.
+- Embeddings are optional and local by default, fused with the lexical side by
+  reciprocal rank rather than a weighted score, and every result names the mode
+  that actually ran so keyword matches are never presented as semantic
+  retrieval.
+- Source descriptors, not corpora: the repository ships a pinned URL and a
+  licence, a bare `sync` reaches nothing over the network, and a plaintext URL,
+  a URL carrying credentials, or an unreadable response is refused with its
+  reason recorded.
+- Reports state the corpus version, document count, retrieval mode, and each
+  source with its licence; the limitations section says in as many words that
+  retrieved text is never evidence for a finding.
+
+- A claim may now be a choice rather than a conjunction. `anyOf` states 2 to 8
+  alternatives of which at least one must hold, bounded to one level: a skill
+  file has to stay checkable at a glance, and a boolean tree is not. Anything
+  stated beside it still has to hold, so the construct widens a claim without
+  loosening the rest of it.
+- With that, `web-security-headers` moved out of the worker into its file and no
+  shipped detection is code any more — `packages/assessment` carries out checks
+  without knowing what any of them is about. The finding identifier, the
+  verdicts, and the benchmark table are unchanged by the move.
+- The alternative that held is what the finding names, and what a failure found
+  instead is what its detail names; both are written from the skill file rather
+  than from the response. A body alternative against a truncated response is
+  undecided rather than false.
+- Fixed the load-time rule that refuses a body claim a probe could not decide:
+  it read only the top level, so a body condition inside an `anyOf` was accepted
+  and then dispatched under `http.probe`, which reports no body — `bodyExcludes`
+  held against an empty string and would have raised a candidate from a body
+  nobody fetched.
 
 ## 19. Open decisions for the maintainer
 

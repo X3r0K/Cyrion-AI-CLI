@@ -8,29 +8,36 @@ export interface ScopeLock {
   engagementId: string
   scopeHash: string
   canonicalScope: string
-  attestation: string
+  /**
+   * What the operator wrote down about who authorized this, when they wanted a
+   * record. Optional: a scope lock is a record an operator chooses to keep, not
+   * a gate a run has to pass.
+   */
+  attestation?: string
   lockedAt: string
 }
 
 /**
- * The operator's written statement that the scope is authorized, bound to the
- * exact scope it was written for. A later scope change invalidates the lock
- * rather than silently inheriting the attestation.
+ * A record of exactly what scope was approved, bound to that scope by hash.
+ *
+ * Writing one is optional and nothing refuses a run without it. What it buys an
+ * operator who wants it is that a later scope change invalidates the lock
+ * rather than silently inheriting it — worth having for a client engagement
+ * with a paper trail, irrelevant for scanning your own staging box.
  */
 export function createScopeLock(
   manifest: EngagementManifest,
-  attestation: string,
+  attestation?: string,
   now = new Date(),
 ): ScopeLock {
-  const clean = attestation.trim()
-  if (clean.length < 8) throw new Error("An attestation must state who authorized this engagement")
-  if (clean.length > 2_048) throw new Error("Attestation is too long")
+  const clean = attestation?.trim()
+  if (clean && clean.length > 2_048) throw new Error("Attestation is too long")
   return {
     version: SCOPE_LOCK_VERSION,
     engagementId: manifest.id,
     scopeHash: scopeHash(manifest.scope),
     canonicalScope: canonicalScope(manifest.scope),
-    attestation: clean,
+    ...(clean ? { attestation: clean } : {}),
     lockedAt: now.toISOString(),
   }
 }
@@ -47,7 +54,10 @@ export function scopeLockError(value: unknown): string | undefined {
   }
   if (typeof lock.scopeHash !== "string" || !/^[a-f0-9]{64}$/.test(lock.scopeHash)) return "lock scopeHash is invalid"
   if (typeof lock.canonicalScope !== "string" || !lock.canonicalScope.trim()) return "lock canonicalScope is invalid"
-  if (typeof lock.attestation !== "string" || lock.attestation.trim().length < 8) return "lock attestation is invalid"
+  if (lock.attestation !== undefined
+    && (typeof lock.attestation !== "string" || !lock.attestation.trim())) {
+    return "lock attestation is invalid"
+  }
   if (typeof lock.lockedAt !== "string" || !Number.isFinite(Date.parse(lock.lockedAt))) return "lock lockedAt is invalid"
   return undefined
 }

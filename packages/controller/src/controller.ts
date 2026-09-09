@@ -24,7 +24,7 @@ import {
   type WorkerResult,
 } from "@cyrion/contracts"
 import { MemoryEvidenceStore } from "@cyrion/evidence"
-import { evaluateScope, scopeHash, scopePolicyError, verifyScopeLock } from "@cyrion/scope"
+import { evaluateScope, scopeHash, scopePolicyError, tryParseTarget, verifyScopeLock } from "@cyrion/scope"
 import { type EngagementStore, MemoryEventStore } from "./event-store"
 import { ScopedToolGateway } from "./tool-gateway"
 
@@ -713,13 +713,14 @@ export class CyrionController {
       keys.add(task.key)
       hashes.add(inputHash)
       if (task.depth > budgets.maxDepth) return `Depth limit exceeded: ${task.id}`
+      // A role says what a task is for; the output shape says what it must
+      // return. A specialist is an assessment like any other — the lens is not
+      // a different kind of answer, and it is not a different permission.
       const expectedOutput = {
         recon: "inventory",
-        web: "assessment",
-        api: "assessment",
         validator: "validation",
         reporter: "report",
-      }[task.role]
+      }[task.role as "recon" | "validator" | "reporter"] ?? "assessment"
       if (task.expectedOutput !== expectedOutput) return `Role/output mismatch: ${task.id}`
       if (task.dependencies.includes(task.id)) return `Self dependency rejected: ${task.id}`
       if (task.parentTaskId === task.id) return `Self parent rejected: ${task.id}`
@@ -842,6 +843,18 @@ function normalizeStoredSnapshot(snapshot: EngagementSnapshot): EngagementSnapsh
   return normalized
 }
 
+/** Whether an asset is a repository root, and therefore not observable at runtime. */
+function isStaticTarget(asset: string, snapshot: EngagementSnapshot): boolean {
+  const parsed = tryParseTarget(asset)
+  if (typeof parsed !== "string" && parsed.kind === "repo") return true
+  // An asset that names no kind of its own is still static when the only scope
+  // entry admitting it is a repository root.
+  return snapshot.manifest.scope.targets.some((expression) => {
+    const target = tryParseTarget(expression)
+    return typeof target !== "string" && target.kind === "repo" && asset.startsWith(target.root)
+  })
+}
+
 export function workerResultPolicyError(
   result: WorkerResult,
   task: TaskSpec,
@@ -881,7 +894,32 @@ export function workerResultPolicyError(
     if (observation.source !== agentId) return `Observation ${observation.id} has invalid provenance`
     const missing = observation.evidenceIds.find((id) => !acceptedEvidenceIds.has(id))
     if (missing) return `Observation ${observation.id} references unknown evidence ${missing}`
+    // A discovered address is a report, not a permission. Every one is held to
+    // the manifest here, so a worker cannot widen an engagement by naming
+    // somewhere new — however it came to know about it.
+    for (const asset of observation.assets ?? []) {
+      const decision = evaluateScope(snapshot.manifest.scope, asset)
+      if (!decision.allowed) {
+        return `Observation ${observation.id} reports an out-of-scope asset: ${asset} (${decision.reason})`
+      }
+    }
     observationIds.add(observation.id)
+  }
+
+  // A proposal is a request, and the same rule that governs a discovered
+  // address governs it: naming somewhere is not permission to go there. A
+  // proposal outside the manifest fails the whole result rather than being
+  // dropped quietly, because a worker asking for it is worth seeing.
+  for (const [index, proposal] of (result.proposedTasks ?? []).entries()) {
+    const decision = evaluateScope(snapshot.manifest.scope, proposal.target)
+    if (!decision.allowed) {
+      return `proposedTasks[${index}] targets outside the approved scope: ${proposal.target} (${decision.reason})`
+    }
+    const ungranted = proposal.capabilities.find(
+      (capability) => !snapshot.manifest.scope.capabilities.includes(capability),
+    )
+    if (ungranted) return `proposedTasks[${index}] asks for an ungranted capability: ${ungranted}`
+    if (proposal.role === "reporter") return `proposedTasks[${index}] may not delegate the report`
   }
 
   const findingIds = new Set<string>()
@@ -891,6 +929,16 @@ export function workerResultPolicyError(
     const missing = finding.evidenceIds.find((id) => !acceptedEvidenceIds.has(id))
     if (missing) return `Finding ${finding.id} references unknown evidence ${missing}`
     findingIds.add(finding.id)
+  }
+
+  // Nothing in a repository observes a running system, so nothing found there
+  // can be confirmed. A static claim stays a candidate until a runtime target
+  // reproduces it.
+  for (const finding of result.findings) {
+    if (finding.status !== "confirmed") continue
+    if (!isStaticTarget(finding.asset, snapshot)) continue
+    return `Finding ${finding.id} is a static claim about a repository and cannot be confirmed; `
+      + "reproduce it against a runtime target first"
   }
 
   if (task.role === "validator") {

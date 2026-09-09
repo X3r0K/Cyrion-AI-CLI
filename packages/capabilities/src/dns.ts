@@ -30,6 +30,7 @@ export const dnsLookup: CapabilityAdapter = {
       return {
         summary: { host: hostname, literal: true, addresses: pin.addresses },
         evidence: [],
+        outcome: `literal address ${hostname}`,
       }
     }
 
@@ -59,6 +60,11 @@ export const dnsLookup: CapabilityAdapter = {
       contentType: "application/json",
       source: request.agentId,
     })
-    return { summary: record, evidence: [evidence] }
+    return {
+      summary: record,
+      evidence: [evidence],
+      outcome: `${pin.addresses.length} address${pin.addresses.length === 1 ? "" : "es"} · ${pin.addresses[0]}`
+        + `${pin.private ? " · private" : ""}`,
+    }
   },
 }

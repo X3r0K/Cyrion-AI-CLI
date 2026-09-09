@@ -21,6 +21,7 @@ import {
   LlmWorkerReviewer,
   bindingForRole,
   createClient,
+  createEmbeddingClient,
   loadModelConfig,
   probeReadiness,
   readEnvironmentConfig,
@@ -38,24 +39,52 @@ import {
   renderMarkdownReport,
   renderSarifReport,
   severities,
+  type KnowledgeRecord,
   type ReportContext,
 } from "@cyrion/reporting"
 import { AssessmentRootPlanner, CapabilityWorkerRuntime } from "@cyrion/assessment"
-import { CapabilityRegistry, capabilityAdapters, planEgress } from "@cyrion/capabilities"
+import {
+  KnowledgeStore,
+  builtInSources,
+  embedPending,
+  knowledgeSourceError,
+  sourceById,
+  syncSource,
+  type CorpusStatus,
+  type Embedder,
+  type KnowledgeSource,
+  type SyncReport,
+} from "@cyrion/knowledge"
+import {
+  CapabilityRegistry,
+  needsUnboundedRunner,
+  McpCapabilities,
+  capabilityAdapters,
+  planEgress,
+  unservedCapabilities,
+} from "@cyrion/capabilities"
 import {
   ContainerToolRunner,
   LocalToolRunner,
   egressFromPins,
+  unreachableFromContainer,
   binariesFor,
   describeSandbox,
   detectHost,
   installPlan,
   requirementFor,
+  inspectWorkerImage,
+  pullWorkerImage,
   toolCatalog,
+  workerImageDrift,
+  workerImageError,
+  workerImageLabel,
   type HostProfile,
   type SandboxKind,
+  type WorkerImagePin,
 } from "@cyrion/sandbox"
 import { loadSkills, type Skill } from "@cyrion/skills"
+import { renderBenchmarkMarkdown, scoreRun, summarize, type RunMetrics } from "@cyrion/benchmark"
 import {
   CyrionMcpServer,
   McpStdioClient,
@@ -84,8 +113,9 @@ import {
   type ProviderSelection,
   type ProviderStatus,
 } from "@cyrion/runtime-opencode"
-import { runTui } from "./tui"
+import { runTui, type TuiExit } from "./tui"
 import { runLaunchScreen } from "./launch-screen"
+import { WatchedEngagement } from "./watch"
 import {
   buildScanManifest,
   defaultScanInput,
@@ -98,7 +128,7 @@ import { readGeneralSettings, saveProviderSelection } from "./provider-config"
 
 export const CLI_VERSION = "0.1.0-alpha.2"
 
-/** Pinned by digest in a release; a tag is enough while the image is unpublished. */
+/** The tag; what it must resolve to is recorded in containers/worker-manifest.json. */
 const DEFAULT_WORKER_IMAGE = "cyrion/kali-worker:0.1"
 
 /** Both routes to an endpoint, named wherever one is missing. */
@@ -254,7 +284,7 @@ async function runDemo(): Promise<void> {
     return
   }
 
-  await runTui(
+  const exit = await runTui(
     controller,
     evidenceStore,
     {
@@ -270,8 +300,12 @@ async function runDemo(): Promise<void> {
         : {}),
     },
     join(absolute(artifactArgument), "..", "reports"),
+    { ...defaultScanInput, sandbox: await detectSandbox() },
   )
   controller.close()
+  // The demo is where an operator learns the terminal; the first real
+  // assessment starts from the same place rather than from a second command.
+  if (exit.kind === "scan") await engageScan(exit.input)
 }
 
 
@@ -557,6 +591,10 @@ interface PreparedEngagement {
   sandbox: SandboxKind
   skills: Skill[]
   artifactRoot: string
+  /** The corpus `knowledge.search` read, when the manifest granted it. */
+  corpus?: CorpusStatus
+  /** Operator-approved MCP tools this run could call, when any were granted. */
+  mcp?: McpCapabilities
   attestation?: string
   autoApprove: boolean
   headless: boolean
@@ -583,22 +621,6 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   if (mode !== "autonomous" && mode !== "supervised") throw new Error("--mode must be autonomous or supervised")
   manifest.mode = mode
 
-  // Reproduction is the one capability that repeats an exploit condition against
-  // a live target, so it is off unless the manifest grants it and supervised
-  // unless the operator says otherwise in as many words.
-  if (manifest.scope.capabilities.includes("poc.run")) {
-    if (manifest.profile === "repository") {
-      throw new Error("poc.run cannot be granted to a repository engagement: a static claim needs a runtime target.")
-    }
-    if (manifest.mode !== "supervised" && !args.includes("--allow-unsupervised-poc")) {
-      manifest.mode = "supervised"
-      console.error(
-        "cyrion: poc.run is granted, so this run is supervised. "
-        + "Pass --allow-unsupervised-poc to run it without approvals.",
-      )
-    }
-  }
-
   const headless = args.includes("--headless") || !process.stdout.isTTY
   const autoApprove = args.includes("--approve-all")
   if (options.requireApproval && headless && manifest.mode === "supervised" && !autoApprove) {
@@ -619,6 +641,75 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   const sandbox: SandboxKind = (requested as SandboxKind | undefined)
     ?? (host.securityDistribution || !host.containerEngine ? "local" : "container")
 
+  // A container's loopback is its own, so a lab on this machine's 127.0.0.1 is
+  // not there at all. That is isolation working, but it reaches the operator as
+  // a connection refused mid-run unless it is named here.
+  if (sandbox === "container") {
+    const unreachable = unreachableFromContainer(manifest.scope.targets)
+    if (unreachable.length) {
+      throw new Error(
+        `${unreachable.join(", ")} is on this machine's loopback, which a container cannot reach — its own `
+        + "loopback is a different network. Use --sandbox local for a target on this machine, or run the "
+        + "target on the cyrion-sandbox network so the container can see it.",
+      )
+    }
+  }
+
+  const mcp = await mcpCapabilities(manifest.scope.capabilities, sandbox)
+
+  // The image that will execute every tool is checked before the engagement
+  // starts, not when the first capability runs: an operator finding out at the
+  // first request has already spent an approval on a run that cannot work.
+  if (sandbox === "container") {
+    const engine = host.containerEngine ?? "docker"
+    const pin = await workerImagePin()
+    let status = await inspectWorkerImage(engine, workerImage())
+    // Absent, so fetch it. Container is the default now, and a first run that
+    // ends in "go and build this" is the ceremony this release removed.
+    if (!status.present) {
+      console.error(`cyrion: fetching the worker image ${terminalSafe(workerImage())} — this happens once`)
+      const pull = await pullWorkerImage(engine, workerImage())
+      status = await inspectWorkerImage(engine, workerImage())
+      // One message rather than the engine's and then ours. The operator asked
+      // to assess a target, not to read a registry error, and the sentence they
+      // need is the one that says what to do next — including that container was
+      // chosen for them, since otherwise the remedy looks like a demand.
+      if (!status.present) {
+        const chosen = readFlag("--sandbox")
+          ? "You asked for --sandbox container."
+          : "Container is the default because a worker runs code it wrote itself; "
+            + "on this machine it is the only mode that confines that."
+        throw new Error([
+          `The worker image ${workerImage()} is not on this machine and could not be pulled.`,
+          `  ${pull.detail}`,
+          "",
+          chosen,
+          "",
+          "Either build it once, which takes a few minutes:",
+          "  ./containers/build-worker.sh",
+          "",
+          "Or run on this machine instead, unconfined:",
+          "  --sandbox local",
+        ].join("\n"))
+      }
+    }
+    const imageError = workerImageError(status, pin.pin)
+    if (imageError) throw new Error(imageError)
+    const drift = workerImageDrift(status, pin.pin)
+    if (drift) console.error(`cyrion: ${terminalSafe(drift)}`)
+  }
+
+  // A capability nobody implements would fail at dispatch, halfway through a
+  // run, after the operator had already authorized it. Refuse at the start.
+  const unserved = unservedCapabilities(manifest.scope.capabilities, mcp?.names() ?? [])
+  if (unserved.length) {
+    throw new Error(
+      `No adapter implements ${unserved.join(", ")}. `
+      + "Run `cyrion tools` to see which capabilities this release can serve, declare an MCP tool that answers "
+      + "as one in mcp.json, and remove the rest from scope.capabilities.",
+    )
+  }
+
   const skills = await loadSkills(absolute(readFlag("--skills") ?? join(projectRoot, "skills")))
   if (!skills.length) throw new Error("No skills were loaded. Pass --skills <directory>.")
 
@@ -629,27 +720,49 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   const stateArgument = readFlag("--state")
   const store = stateArgument ? new SQLiteEngagementStore(absolute(stateArgument), manifest.id) : undefined
 
+  // In a container, a capability implemented in-process falls back to a tool, so
+  // that tool has to be on the allowlist or the request cannot leave the sandbox.
   const binaries = capabilityAdapters
     .filter((adapter) => manifest.scope.capabilities.includes(adapter.capability))
-    .map((adapter) => adapter.binary)
+    .flatMap((adapter) => [adapter.binary, sandbox === "container" ? adapter.containerBinary : undefined])
     .filter((binary): binary is string => !!binary)
   const egress = sandbox === "container" ? await planEgress(manifest.scope) : undefined
+  // A granted shell has no fixed binary, so the allowlist stops bounding the
+  // run and the sandbox is what does. Said out loud when it is the operator's
+  // own machine that is holding the line.
+  const unbounded = needsUnboundedRunner(manifest.scope.capabilities)
+  if (unbounded && sandbox === "local") {
+    console.error(
+      "cyrion: shell.exec runs commands this agent writes, on this machine, as you. "
+      + "--sandbox container puts them behind a kernel boundary instead.",
+    )
+  }
   const runner = sandbox === "local"
-    ? new LocalToolRunner({ allowedBinaries: binaries })
+    ? new LocalToolRunner({ allowedBinaries: binaries, ...(unbounded ? { allowAnyBinary: true } : {}) })
     : new ContainerToolRunner({
       engine: host.containerEngine ?? "docker",
-      image: readFlag("--image") ?? DEFAULT_WORKER_IMAGE,
+      image: workerImage(),
+      ...(await workerImagePin()),
       engagementId: manifest.id,
       allowedBinaries: binaries,
+      ...(unbounded ? { allowAnyBinary: true } : {}),
       ...(egress ? { egress: egress.policy } : {}),
       ...(args.includes("--allow-unfiltered-egress") ? { allowUnfilteredEgress: true } : {}),
     })
+
+  const knowledge = manifest.scope.capabilities.includes("knowledge.search")
+    ? openCorpus(knowledgePath())
+    : undefined
+  const embedder = knowledge ? await optionalEmbedder() : undefined
 
   const registry = new CapabilityRegistry({
     runner,
     scope: manifest.scope,
     evidence: evidenceStore,
     capabilities: manifest.scope.capabilities,
+    ...(knowledge ? { knowledge } : {}),
+    ...(embedder ? { embedder } : {}),
+    ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
 
@@ -657,7 +770,10 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
   // A provider may review each transition and each canonical result, or author
   // transitions the controller then validates — it never gains a tool.
   const deterministicPlanner = new AssessmentRootPlanner({ skills })
-  const capabilityWorkers = new CapabilityWorkerRuntime({ skills })
+  const capabilityWorkers = new CapabilityWorkerRuntime({
+    skills,
+    ...(mcp ? { externalCapabilities: mcp.names() } : {}),
+  })
   const rootPrompt = review.models
     ? await Bun.file(join(projectRoot, "agents/root/system.md")).text()
     : ""
@@ -713,13 +829,123 @@ async function prepareEngagement(options: { requireApproval: boolean }): Promise
     sandbox,
     skills,
     artifactRoot,
+    ...(knowledge ? { corpus: knowledge.status() } : {}),
+    ...(mcp ? { mcp } : {}),
     ...(attestation ? { attestation } : {}),
     autoApprove,
     headless,
     close: async () => {
       controller.close()
+      knowledge?.close()
+      await mcp?.close()
       await runner.close()
     },
+  }
+}
+
+/**
+ * Operator-approved MCP tools this engagement may call, if any.
+ *
+ * Two deliberate acts are required and neither implies the other: the operator
+ * declared the server and its tool allowlist in `mcp.json`, and the manifest
+ * granted the capability that tool answers as. A configuration alone grants
+ * nothing, and a grant with no declaration is caught by the unserved check.
+ */
+async function mcpCapabilities(
+  granted: readonly string[],
+  sandbox: SandboxKind,
+): Promise<McpCapabilities | undefined> {
+  const named = readFlag("--mcp")
+  const path = absolute(named ?? "mcp.json")
+  if (!existsSync(path)) {
+    if (named) throw new Error(`MCP configuration not found: ${path}`)
+    return undefined
+  }
+  let value: unknown
+  try {
+    value = await Bun.file(path).json()
+  } catch {
+    throw new Error(`MCP configuration is not valid JSON: ${path}`)
+  }
+  assertMcpConfig(value)
+  const host = new McpCapabilities({ config: value, granted })
+  if (!host.names().length) return undefined
+
+  // An MCP server is a subprocess of this process, not of the sandbox: its
+  // requests leave the host under the operator's own network, and the kernel
+  // egress allowlist that governs every other capability does not see them.
+  // Said once, so the transcript records where those requests came from.
+  console.error(
+    `cyrion: ${host.names().length} capabilit${host.names().length === 1 ? "y is" : "ies are"} served by MCP `
+    + `(${terminalSafe(host.names().join(", "))}) — results are untrusted data, and the server runs on this host`
+    + `${sandbox === "container" ? ", outside the container's egress allowlist" : ""}.`,
+  )
+  return host
+}
+
+function knowledgePath(): string {
+  return absolute(readFlag("--knowledge") ?? ".cyrion/knowledge.sqlite")
+}
+
+/**
+ * Opens the corpus a granted `knowledge.search` will read.
+ *
+ * A granted capability with nothing behind it fails at dispatch, halfway
+ * through a run the operator already authorized. Refusing here is the same
+ * discipline as the unimplemented-capability check above.
+ */
+function openCorpus(path: string): KnowledgeStore {
+  if (!existsSync(path)) {
+    throw new Error(
+      `knowledge.search is granted but no corpus exists at ${path}. `
+      + "Run `cyrion knowledge sync` first, or remove knowledge.search from scope.capabilities.",
+    )
+  }
+  const store = KnowledgeStore.open(path)
+  if (!store.status().documents) {
+    store.close()
+    throw new Error(`The corpus at ${path} holds no documents. Run \`cyrion knowledge sync\` to ingest one.`)
+  }
+  return store
+}
+
+/**
+ * The embedding client, when one is configured.
+ *
+ * Absent is a supported answer, not a degraded one: retrieval falls back to
+ * lexical search, and the search result says so rather than presenting keyword
+ * matches as semantic ones.
+ */
+async function optionalEmbedder(): Promise<Embedder | undefined> {
+  const config = await findModelConfig().catch(() => undefined)
+  if (!config?.roles.embedding) return undefined
+  try {
+    return createEmbeddingClient(config, Bun.env)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The corpus this run could consult, as the report states it.
+ *
+ * Recorded even when nothing was retrieved: what a worker was allowed to read
+ * is part of how the engagement was conducted, and a reader comparing two
+ * reports needs to know whether they were working from the same text.
+ */
+function knowledgeRecord(corpus: CorpusStatus | undefined): KnowledgeRecord | undefined {
+  if (!corpus) return undefined
+  return {
+    corpusVersion: corpus.corpusVersion,
+    documents: corpus.documents,
+    chunks: corpus.chunks,
+    retrieval: corpus.embedded ? "hybrid" : "lexical",
+    sources: corpus.sources.map((source) => ({
+      id: source.id,
+      license: source.license,
+      documents: source.documents,
+    })),
+    ...(corpus.embeddingModel ? { embeddingModel: corpus.embeddingModel } : {}),
   }
 }
 
@@ -730,6 +956,21 @@ async function recordToolVersions(prepared: PreparedEngagement): Promise<Array<{
     const info = await prepared.runner.lookup(binary).catch(() => undefined)
     if (info) tools.push({ name: info.name, version: info.version ?? "present, version not reported" })
   }
+  // Which image the tools came from is provenance, the same as their versions:
+  // "nmap 7.99" means something different from a different image's nmap 7.99.
+  const image = prepared.runner instanceof ContainerToolRunner ? prepared.runner.imageStatus : undefined
+  if (image) tools.push({ name: `image:${image.image}`, version: workerImageLabel(image) })
+
+  // An MCP tool is as much a part of how the engagement was conducted as a
+  // binary is, and the report has to be able to say which one answered.
+  for (const entry of prepared.mcp?.describe() ?? []) {
+    tools.push({
+      name: `mcp:${entry.server}/${entry.tool} → ${entry.capability}`,
+      version: entry.serverVersion
+        ? `${entry.serverName ?? entry.server} ${entry.serverVersion}`
+        : "declared, never called",
+    })
+  }
   return tools
 }
 
@@ -738,7 +979,14 @@ async function recordToolVersions(prepared: PreparedEngagement): Promise<Array<{
  * executed in the selected sandbox, evidence hashed locally, and every
  * transition validated by the controller before anything is dispatched.
  */
-async function runEngagement(): Promise<void> {
+/** `engage`, plus whatever the operator starts from Mission when it closes. */
+async function runEngagementSession(): Promise<void> {
+  const next = await runEngagement()
+  if (next) await engageScan(next)
+}
+
+/** Runs one engagement, and reports the assessment the operator started from Mission. */
+async function runEngagement(): Promise<ScanInput | undefined> {
   const prepared = await prepareEngagement({ requireApproval: true })
   const { controller } = prepared
   try {
@@ -753,9 +1001,9 @@ async function runEngagement(): Promise<void> {
         skills: prepared.skills.map((skill) => skill.id),
       }))
       if (result.status !== "completed") process.exitCode = 1
-      return
+      return undefined
     }
-    await runTui(
+    const exit = await runTui(
       controller,
       prepared.evidenceStore,
       {
@@ -766,7 +1014,11 @@ async function runEngagement(): Promise<void> {
         ...(prepared.attestation ? { attestation: prepared.attestation } : {}),
       },
       join(prepared.artifactRoot, "..", "reports"),
+      // The machine's sandbox carries over; the target and its authorization
+      // never do, because they are decisions about the next assessment.
+      { ...defaultScanInput, sandbox: prepared.sandbox },
     )
+    return exit.kind === "scan" ? exit.input : undefined
   } finally {
     await prepared.close()
   }
@@ -803,9 +1055,11 @@ async function runProbe(): Promise<void> {
 
   const artifactRoot = absolute(readFlag("--artifacts") ?? ".cyrion/artifacts")
   const evidenceStore = new LocalEvidenceStore(artifactRoot)
+  // In a container, a capability implemented in-process falls back to a tool, so
+  // that tool has to be on the allowlist or the request cannot leave the sandbox.
   const binaries = capabilityAdapters
     .filter((adapter) => manifest.scope.capabilities.includes(adapter.capability))
-    .map((adapter) => adapter.binary)
+    .flatMap((adapter) => [adapter.binary, kind === "container" ? adapter.containerBinary : undefined])
     .filter((binary): binary is string => !!binary)
 
   // The allowlist is built from the approved scope before anything starts, so a
@@ -815,22 +1069,36 @@ async function runProbe(): Promise<void> {
     console.error(`cyrion: no address could be pinned for ${egress.unresolved.map((item) => terminalSafe(item)).join(", ")}`)
   }
 
+  const probeUnbounded = needsUnboundedRunner([capability])
   const runner = kind === "local"
-    ? new LocalToolRunner({ allowedBinaries: binaries })
+    ? new LocalToolRunner({ allowedBinaries: binaries, ...(probeUnbounded ? { allowAnyBinary: true } : {}) })
     : new ContainerToolRunner({
       engine: host.containerEngine ?? "docker",
-      image: readFlag("--image") ?? DEFAULT_WORKER_IMAGE,
+      image: workerImage(),
+      ...(await workerImagePin()),
       engagementId: manifest.id,
       allowedBinaries: binaries,
+      ...(probeUnbounded ? { allowAnyBinary: true } : {}),
       ...(egress ? { egress: egress.policy } : {}),
       ...(args.includes("--allow-unfiltered-egress") ? { allowUnfilteredEgress: true } : {}),
     })
+
+  // Only the capability being probed needs its corpus: an operator checking
+  // http.probe should not be stopped by a knowledge store they have not built.
+  const knowledge = capability === "knowledge.search" ? openCorpus(knowledgePath()) : undefined
+  const embedder = knowledge ? await optionalEmbedder() : undefined
+  // An MCP-backed capability is probed the same way a built-in one is: by hand,
+  // under the same grant, scope check, and evidence rules.
+  const mcp = await mcpCapabilities([capability], kind)
 
   const registry = new CapabilityRegistry({
     runner,
     scope: manifest.scope,
     evidence: evidenceStore,
     capabilities: manifest.scope.capabilities,
+    ...(knowledge ? { knowledge } : {}),
+    ...(embedder ? { embedder } : {}),
+    ...(mcp ? { extraAdapters: mcp.adapters() } : {}),
   })
   // Pins used for the allowlist are the pins later connections are held to.
   for (const pin of egress?.pins ?? []) registry.context.pins.set(pin.hostname, pin)
@@ -865,6 +1133,8 @@ async function runProbe(): Promise<void> {
     }
   } finally {
     clearTimeout(timer)
+    knowledge?.close()
+    await mcp?.close()
     await runner.close()
   }
 }
@@ -926,7 +1196,8 @@ async function runReplay(): Promise<void> {
     ? new LocalToolRunner({ allowedBinaries: binariesFor(["poc.run"]) })
     : new ContainerToolRunner({
       engine: host.containerEngine ?? "docker",
-      image: readFlag("--image") ?? DEFAULT_WORKER_IMAGE,
+      image: workerImage(),
+      ...(await workerImagePin()),
       engagementId: manifest.id,
       allowedBinaries: binariesFor(["poc.run"]),
       ...(egress ? { egress: egress.policy } : {}),
@@ -1099,11 +1370,13 @@ async function runCi(): Promise<void> {
   })()
 
   const models = reportModels(prepared)
+  const knowledge = knowledgeRecord(prepared.corpus)
   const context: ReportContext = {
     sandbox: prepared.sandbox,
     runtime: { planner: prepared.planner, workers: prepared.workers },
     tools: await recordToolVersions(prepared).catch(() => []),
     ...(models.length ? { models } : {}),
+    ...(knowledge ? { knowledge } : {}),
     ...(prepared.attestation ? { attestation: prepared.attestation } : {}),
   }
   await mkdir(reportDirectory, { recursive: true, mode: 0o700 })
@@ -1171,10 +1444,18 @@ async function readMcpConfig(): Promise<McpConfig> {
     throw new Error(`MCP configuration is not valid JSON: ${path}`)
   }
   assertMcpConfig(value)
+  // The rule a run applies, checked where an operator looks before starting one:
+  // an MCP tool may not answer as a capability Cyrion implements itself.
+  new McpCapabilities({ config: value, granted: [] })
   return value
 }
 
 async function runMcpServe(): Promise<void> {
+  // Pointed at a manifest, the server can start that engagement; pointed at a
+  // state database, it reads a run somebody else started. The argument says
+  // which, so there is no flag to remember.
+  if (readFlag("--scope") || readFlag("--manifest")) return runMcpServeStartable()
+
   const stateArgument = readFlag("--state")
   const engagementId = readFlag("--engagement")
   const artifactRoot = absolute(readFlag("--artifacts") ?? ".cyrion/artifacts")
@@ -1184,16 +1465,6 @@ async function runMcpServe(): Promise<void> {
   const databasePath = absolute(stateArgument)
   if (!existsSync(databasePath)) throw new Error(`State database not found: ${databasePath}`)
   const store = new SQLiteEngagementStore(databasePath, engagementId)
-
-  if (args.includes("--allow-start")) {
-    // Starting a run from another agent needs the same authorization record a
-    // run from the command line needs, and it is off unless asked for.
-    throw new Error(
-      "mcp serve --allow-start is not available in this release: starting an engagement from another agent "
-      + "requires a scope lock bound to the manifest, which this server does not yet hold. Run `cyrion engage` "
-      + "or `cyrion ci`, then serve the resulting state read-only.",
-    )
-  }
 
   const server = new CyrionMcpServer({
     // Read per request: another agent watching a live run sees it progress.
@@ -1209,6 +1480,67 @@ async function runMcpServe(): Promise<void> {
     await serveStdio(server, { onError: (message) => console.error(`cyrion: ${terminalSafe(message)}`) })
   } finally {
     store.close()
+  }
+}
+
+/**
+ * The server that can also start the engagement the operator prepared.
+ *
+ * The caller chooses nothing: the scope, the capabilities, the sandbox, and the
+ * authorization are all decided before this process starts speaking, by the
+ * manifest and the scope lock on disk. `start_engagement` only releases work
+ * that was already authorized — the calling agent has to repeat the operator's
+ * attestation to do it, and cannot widen anything by asking differently.
+ */
+async function runMcpServeStartable(): Promise<void> {
+  // Every refusal a command-line run would make happens here, before the first
+  // frame: an unserved capability, a loopback target in a container, a
+  // supervised mode nobody can approve over stdio.
+  const prepared = await prepareEngagement({ requireApproval: true })
+
+  // A caller starts the engagement the operator prepared and picks nothing:
+  // scope, capabilities, sandbox and mode were all decided before the server
+  // spoke. Where the operator kept a scope lock with an attestation in it, the
+  // caller repeats that too — a record they asked for, not a gate.
+  const attestation = prepared.attestation?.trim()
+
+  let run: Promise<EngagementSnapshot> | undefined
+  const server = new CyrionMcpServer({
+    snapshot: () => prepared.controller.snapshot,
+    evidence: prepared.evidenceStore,
+    version: CLI_VERSION,
+    startEngagement: async (input) => {
+      if (attestation && input.attestation !== attestation) {
+        throw new Error(
+          "The attestation does not match the operator's scope lock. Repeat the attestation recorded in the "
+          + "lock exactly; this server cannot accept a new authorization.",
+        )
+      }
+      if (!run) {
+        console.error(`cyrion: ${terminalSafe(prepared.manifest.id)} started over MCP`)
+        run = prepared.controller.run()
+        // The run owns the process from here; a rejection is reported through
+        // the snapshot the caller reads, never as an unhandled failure.
+        run.catch(() => undefined)
+      }
+      return { engagementId: prepared.manifest.id, status: prepared.controller.snapshot.status }
+    },
+  })
+
+  console.error(
+    `cyrion: MCP server ready for ${terminalSafe(prepared.manifest.id)} (${server.tools.length} tools, `
+    + `start enabled, sandbox ${prepared.sandbox.toUpperCase()}) — speaking JSON-RPC on stdio`,
+  )
+  try {
+    await serveStdio(server, { onError: (message) => console.error(`cyrion: ${terminalSafe(message)}`) })
+  } finally {
+    // The peer hung up. An engagement it started does not outlive the
+    // conversation: it is cancelled, and what it recorded stays on disk.
+    if (run) {
+      await prepared.controller.cancel().catch(() => undefined)
+      await run.catch(() => undefined)
+    }
+    await prepared.close()
   }
 }
 
@@ -1294,15 +1626,16 @@ async function runMcpClient(subcommand: "list" | "call"): Promise<void> {
  * requirement to assemble them by hand.
  */
 async function runScan(): Promise<void> {
-  const flagTarget = readFlag("--target")
+  // `cyrion hack acme.test` — the target is the argument, because that is the
+  // whole sentence. `--target` still works, and `scan` still opens the form.
+  const positional = args[1] && !args[1].startsWith("-") ? args[1] : undefined
+  const flagTarget = readFlag("--target") ?? positional
   const headless = args.includes("--headless") || !process.stdout.isTTY
-  const host = await detectHost()
   const requested = readFlag("--sandbox")
   if (requested && requested !== "local" && requested !== "container") {
     throw new Error("--sandbox must be local or container")
   }
-  const detected: SandboxKind = (requested as SandboxKind | undefined)
-    ?? (host.securityDistribution || !host.containerEngine ? "local" : "container")
+  const detected: SandboxKind = (requested as SandboxKind | undefined) ?? await detectSandbox()
 
   const mode = readFlag("--mode") ?? "autonomous"
   if (mode !== "autonomous" && mode !== "supervised") throw new Error("--mode must be autonomous or supervised")
@@ -1323,17 +1656,95 @@ async function runScan(): Promise<void> {
     ...(readFlag("--name") ? { name: readFlag("--name")! } : {}),
   }
 
-  // A terminal gets the form; a pipeline gets exactly what it asked for.
-  const chosen = headless || (flagTarget && readFlag("--attest"))
+  // A target on the command line is an answer, not a draft: `cyrion hack x`
+  // runs, and the form is for the operator who did not bring one.
+  const chosen = headless || flagTarget
     ? initial
     : await runLaunchScreen(initial)
   if (!chosen) {
     console.error("cyrion: no assessment was started")
     return
   }
+  const prepared = await writeScanFiles(chosen)
+  if (args.includes("--dry-run")) {
+    console.error("cyrion: --dry-run, so nothing was executed. Start it with:")
+    console.error(
+      `  cyrion engage --scope ${terminalSafe(prepared.manifestPath)} `
+      + `--scope-lock ${terminalSafe(prepared.lockPath)}`,
+    )
+    return
+  }
+
+  // Hand the prepared engagement to the same path `cyrion engage` uses.
+  const argv = engageArgv(
+    chosen,
+    prepared,
+    headless,
+    passThrough(["--planner", "--workers", "--artifacts", "--state", "--skills", "--model-timeout"]),
+  )
+  args.splice(0, args.length, "engage", ...argv)
+  const next = await runEngagement()
+  if (next) await engageScan(next)
+}
+
+/** The worker image this run will use: the operator's, or the release's. */
+function workerImage(): string {
+  return readFlag("--image") ?? DEFAULT_WORKER_IMAGE
+}
+
+/**
+ * What the release says its worker image is.
+ *
+ * The manifest is written by `containers/build-worker.sh` from the image it
+ * actually built, so this is a record rather than an intention. It is applied
+ * only to the image it names: an operator who passed `--image` asked for
+ * something else deliberately, and the runner says so instead of refusing it.
+ */
+async function workerImagePin(): Promise<{ pin?: WorkerImagePin }> {
+  const path = join(projectRoot, "containers", "worker-manifest.json")
+  if (!existsSync(path)) return {}
+  const value = await Bun.file(path).json().catch(() => undefined) as
+    { image?: unknown; id?: unknown; repoDigest?: unknown } | undefined
+  if (!value || typeof value.image !== "string") return {}
+  return {
+    pin: {
+      image: value.image,
+      ...(typeof value.id === "string" && value.id ? { id: value.id } : {}),
+      ...(typeof value.repoDigest === "string" && value.repoDigest ? { repoDigest: value.repoDigest } : {}),
+    },
+  }
+}
+
+/**
+ * What `--sandbox` defaults to on this machine.
+ *
+ * Container, wherever there is an engine to run one. A worker writes and runs
+ * code the operator did not read, so the default belongs somewhere that is not
+ * their home directory with their credentials in the environment. Local stays
+ * a flag away and is fully supported — it is the Kali and Parrot path — but it
+ * is now something you choose rather than something you get.
+ */
+async function detectSandbox(): Promise<SandboxKind> {
+  const host = await detectHost()
+  return host.containerEngine ? "container" : "local"
+}
+
+interface PreparedScan {
+  manifest: EngagementManifest
+  manifestPath: string
+  lockPath: string
+}
+
+/**
+ * Writes the two files an assessment starts from, and says what they contain.
+ *
+ * The manifest and its scope lock are on disk before anything runs, whether the
+ * operator filled the form at the shell or under Mission: what was authorized
+ * is a record, not a terminal session.
+ */
+async function writeScanFiles(chosen: ScanInput): Promise<PreparedScan> {
   const inputError = scanInputError(chosen)
   if (inputError) throw new Error(inputError)
-
   const manifest = buildScanManifest(chosen)
   const lock = createScopeLock(manifest, chosen.attestation)
   const directory = absolute(readFlag("--out") ?? ".cyrion/engagements")
@@ -1352,25 +1763,58 @@ async function runScan(): Promise<void> {
     `  manifest     ${terminalSafe(manifestPath)}`,
     `  lock         ${terminalSafe(lockPath)}`,
   ].join("\n"))
-  if (args.includes("--dry-run")) {
-    console.error("cyrion: --dry-run, so nothing was executed. Start it with:")
-    console.error(`  cyrion engage --scope ${terminalSafe(manifestPath)} --scope-lock ${terminalSafe(lockPath)}`)
-    return
-  }
+  return { manifest, manifestPath, lockPath }
+}
 
-  // Hand the prepared engagement to the same path `cyrion engage` uses.
-  const argv = [
-    "--scope", manifestPath,
-    "--scope-lock", lockPath,
+/** The `engage` command line one approved form implies. */
+function engageArgv(
+  chosen: ScanInput,
+  prepared: PreparedScan,
+  headless: boolean,
+  forwarded: string[],
+): string[] {
+  return [
+    "--scope", prepared.manifestPath,
+    "--scope-lock", prepared.lockPath,
     "--sandbox", chosen.sandbox,
-    "--mode", manifest.mode,
-    ...(manifest.mode === "supervised" && headless ? ["--approve-all"] : []),
-    ...(manifest.scope.capabilities.includes("poc.run") ? ["--allow-unsupervised-poc"] : []),
+    "--mode", prepared.manifest.mode,
+    ...(prepared.manifest.mode === "supervised" && headless ? ["--approve-all"] : []),
     ...(headless ? ["--headless"] : []),
-    ...passThrough(["--planner", "--workers", "--artifacts", "--state", "--skills", "--model-timeout"]),
+    ...forwarded,
   ]
-  args.splice(0, args.length, "engage", ...argv)
-  await runEngagement()
+}
+
+/**
+ * Runs the assessment an operator started from Mission, and the one after that.
+ *
+ * The terminal that handed this over is already closed and its engagement
+ * cancelled, so each run replaces the last rather than nesting inside it.
+ */
+async function engageScan(first: ScanInput): Promise<void> {
+  let chosen: ScanInput | undefined = first
+  while (chosen) {
+    const prepared = await writeScanFiles(chosen)
+    // A terminal handoff is never headless: someone is sitting in front of it.
+    args.splice(0, args.length, "engage", ...engageArgv(chosen, prepared, false, handoffFlags()))
+    chosen = await runEngagement()
+  }
+}
+
+/**
+ * Flags an assessment started from Mission carries into the next run.
+ *
+ * Where artifacts, state, and skills live follows the operator across a
+ * handoff. How a fixture demo was reviewed does not: `--planner opencode` is a
+ * word the demo understands and an engagement refuses, so a review mode is
+ * forwarded only when `engage` accepts it.
+ */
+function handoffFlags(): string[] {
+  const forwarded = passThrough(["--artifacts", "--state", "--skills", "--model-timeout"])
+  const planner = readFlag("--planner")
+  if (planner && ["assessment", "llm", "llm-author"].includes(planner)) forwarded.push("--planner", planner)
+  const workers = readFlag("--workers")
+  if (workers && ["capability", "llm"].includes(workers)) forwarded.push("--workers", workers)
+  return forwarded
 }
 
 /** Flags the operator set on `scan` that `engage` also understands. */
@@ -1385,6 +1829,382 @@ function passThrough(names: readonly string[]): string[] {
   return forwarded
 }
 
+
+/**
+ * Runs the labs and reports what the assessment actually got right.
+ *
+ * Ground truth lives with the labs, not with the code being measured, so the
+ * benchmark can fail. Only confirmed findings count as claims: a candidate
+ * nobody validated is not an assertion about a target, and counting one would
+ * reward raising noise. `inconclusive` gets its own column rather than being
+ * folded into either side, because not knowing is a different outcome from
+ * being right or wrong.
+ */
+async function runBench(): Promise<void> {
+  const { labs, labIds } = await import("../../../fixtures/labs/catalog")
+  const selected = readFlag("--lab")?.split(",").map((value) => value.trim()).filter(Boolean) ?? labIds
+  for (const id of selected) {
+    if (!labIds.includes(id)) throw new Error(`--lab must name ${labIds.join(", ")}`)
+  }
+  const sandbox = (readFlag("--sandbox") ?? "local") as SandboxKind
+  if (sandbox !== "local" && sandbox !== "container") throw new Error("--sandbox must be local or container")
+  const planner = readFlag("--planner") ?? "assessment"
+  const workers = readFlag("--workers") ?? "capability"
+  const deterministic = planner === "assessment" && workers === "capability"
+  const root = absolute(readFlag("--out") ?? ".cyrion/benchmark")
+  // Every flag is read before the loop: dispatching each lab through
+  // `prepareEngagement` replaces the argument list, and a flag read afterwards
+  // would be read from the engagement's arguments rather than the benchmark's.
+  const markdownPath = absolute(readFlag("--report") ?? join(root, "BENCHMARKS.md"))
+  const modelTimeout = readFlag("--model-timeout")
+  const asJson = args.includes("--json")
+  await mkdir(root, { recursive: true, mode: 0o700 })
+
+  const fixtures = await Bun.file(join(projectRoot, "fixtures/manifest.json")).json() as { fixtureVersion: string }
+  const skills = await loadSkills(join(projectRoot, "skills"))
+  const runs: RunMetrics[] = []
+  let models: Array<{ role: string; endpoint: string; model: string }> = []
+
+  for (const id of selected) {
+    const definition = labs[id]!
+    const server = definition.start()
+    const truth = definition.truth(`http://127.0.0.1:${server.port}`)
+    const manifest: EngagementManifest = {
+      id: `ENG-BENCH-${id.toUpperCase()}`,
+      name: `Benchmark: ${truth.name}`,
+      objective: truth.purpose,
+      profile: "web-api",
+      mode: "autonomous",
+      scope: { targets: [...truth.targets], excluded: [], capabilities: ["dns.lookup", "http.probe", "poc.run"] },
+      budgets: {
+        maxConcurrentAgents: 3, maxAgents: 60, maxDepth: 3, maxTasks: 60,
+        maxDurationMs: 1_800_000, maxTokens: 400_000, maxCostUsd: 5,
+      },
+    }
+    const manifestPath = join(root, `${manifest.id}.json`)
+    await Bun.write(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+    console.error(`cyrion: running lab ${terminalSafe(id)} — ${terminalSafe(truth.purpose)}`)
+    const started = performance.now()
+    let snapshot: EngagementSnapshot
+    try {
+      args.splice(0, args.length, "engage",
+        "--scope", manifestPath,
+        "--sandbox", sandbox,
+        "--mode", "autonomous",
+        "--approve-all",
+        "--headless",
+        "--artifacts", join(root, id, "artifacts"),
+        "--planner", planner,
+        "--workers", workers,
+        ...(modelTimeout ? ["--model-timeout", modelTimeout] : []))
+      const prepared = await prepareEngagement({ requireApproval: false })
+      if (!models.length) models = reportModels(prepared)
+      try {
+        snapshot = await prepared.controller.run()
+      } finally {
+        await prepared.close()
+      }
+    } finally {
+      server.stop()
+    }
+    const wallClockMs = Math.round(performance.now() - started)
+    const metrics = scoreRun(snapshot, truth, { wallClockMs })
+    runs.push(metrics)
+    console.error(
+      `cyrion:   ${metrics.status} — ${metrics.truePositives} true, ${metrics.falsePositives} false, `
+      + `${metrics.falseNegatives} missed, ${metrics.inconclusive} inconclusive, `
+      + `${metrics.scopeViolations} scope violation(s)`,
+    )
+  }
+
+  const report = summarize(runs, {
+    cliVersion: CLI_VERSION,
+    fixtureVersion: fixtures.fixtureVersion,
+    planner,
+    workers,
+    sandbox,
+    deterministic,
+    ...(models.length ? { models } : {}),
+  })
+  const jsonPath = join(root, "benchmark.json")
+  await Bun.write(jsonPath, `${JSON.stringify(report, null, 2)}\n`)
+  await Bun.write(markdownPath, renderBenchmarkMarkdown(report))
+
+  if (asJson) console.log(JSON.stringify(report))
+  else console.log(renderBenchmarkMarkdown(report))
+  console.error(`cyrion: wrote ${terminalSafe(jsonPath)} and ${terminalSafe(markdownPath)}`)
+  void skills
+
+  // A benchmark that tolerates a scope violation is not measuring the thing
+  // that matters most, so the command fails when one occurs.
+  if (report.totals.scopeViolations > 0 || report.totals.overconfident > 0) process.exitCode = 1
+}
+
+
+/**
+ * Attaches to an engagement someone else is running, read only.
+ *
+ * A headless run on a server, a `cyrion ci` job, a colleague's terminal — all
+ * of them write the same durable record, and this reads it. Every operator
+ * control refuses rather than reaching across into a running engagement, which
+ * is the sort of thing the controller exists to prevent.
+ */
+async function runWatch(): Promise<void> {
+  const engagementId = args[1]
+  if (!engagementId || engagementId.startsWith("-")) {
+    throw new Error("watch requires an engagement ID, and --state <sqlite-path>")
+  }
+  const stateArgument = readFlag("--state")
+  if (!stateArgument) throw new Error("watch requires --state <sqlite-path>")
+  const databasePath = absolute(stateArgument)
+  if (!existsSync(databasePath)) throw new Error(`State database not found: ${databasePath}`)
+
+  const store = new SQLiteEngagementStore(databasePath, engagementId)
+  const initial = store.loadSnapshot()
+  if (!initial) {
+    store.close()
+    throw new Error(`Engagement not found in state database: ${terminalSafe(engagementId)}`)
+  }
+  const intervalMs = Number(readFlag("--interval") ?? 500)
+  const watcher = new WatchedEngagement(store, initial, { intervalMs, untilFinished: args.includes("--until-finished") })
+
+  if (args.includes("--headless") || !process.stdout.isTTY) {
+    // No terminal to draw in: report each change as a line instead.
+    let seen = 0
+    const emit = (): void => {
+      const snapshot = watcher.snapshot
+      for (const event of snapshot.events.slice(seen)) console.log(JSON.stringify(event))
+      seen = snapshot.events.length
+    }
+    const unsubscribe = watcher.events.subscribe(emit)
+    emit()
+    const result = await watcher.run()
+    unsubscribe()
+    console.log(JSON.stringify(statusSummary(result)))
+    watcher.close()
+    return
+  }
+
+  let exit: TuiExit = { kind: "closed" }
+  try {
+    exit = await runTui(
+      watcher,
+      new LocalEvidenceStore(absolute(readFlag("--artifacts") ?? ".cyrion/artifacts")),
+      { mode: "live", planner: "assessment", workers: "capability", notice: "Read-only: watching an engagement run elsewhere." },
+      join(absolute(readFlag("--artifacts") ?? ".cyrion/artifacts"), "..", "reports"),
+      { ...defaultScanInput, sandbox: await detectSandbox() },
+    )
+  } finally {
+    watcher.close()
+  }
+  // Starting an assessment is not steering the watched one: it is a new
+  // engagement, with its own manifest and its own authorization, run here.
+  if (exit.kind === "scan") await engageScan(exit.input)
+}
+
+/**
+ * The operator's side of the corpus: what is in it, how it got there, and what
+ * a search actually returns.
+ *
+ * Ingestion is a separate command from an engagement on purpose. Fetching a
+ * standard is a network request to somewhere that is not the target, and it
+ * happens when an operator asks for it, never in the middle of a run.
+ */
+async function runKnowledge(): Promise<void> {
+  const subcommand = args[1] && !args[1].startsWith("-") ? args[1] : "status"
+  if (subcommand !== "sync" && subcommand !== "status" && subcommand !== "search" && subcommand !== "forget") {
+    throw new Error("knowledge takes sync, status, search, or forget")
+  }
+  const path = knowledgePath()
+  if (subcommand !== "sync" && !existsSync(path)) {
+    throw new Error(`No corpus at ${path}. Run \`cyrion knowledge sync\` to build one.`)
+  }
+  await mkdir(join(path, ".."), { recursive: true }).catch(() => undefined)
+  const store = KnowledgeStore.open(path)
+  try {
+    if (subcommand === "sync") await knowledgeSync(store, path)
+    else if (subcommand === "search") await knowledgeSearchCommand(store)
+    else if (subcommand === "forget") knowledgeForget(store)
+    else knowledgeStatus(store, path)
+  } finally {
+    store.close()
+  }
+}
+
+async function knowledgeSync(store: KnowledgeStore, path: string): Promise<void> {
+  const sources = await selectedSources()
+  const reports: SyncReport[] = []
+  for (const source of sources) {
+    if (source.origin === "remote" && !args.includes("--yes") && !args.includes("--json")) {
+      console.error(
+        `cyrion: fetching ${terminalSafe(source.name)} (${source.license}) from ${(source.urls ?? []).length} URL(s).`,
+      )
+    }
+    reports.push(await syncSource(store, source, { root: projectRoot }))
+  }
+
+  const embedded = args.includes("--embed") ? await knowledgeEmbed(store) : undefined
+  const status = store.status()
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ path, status, sources: reports, ...(embedded ? { embedded } : {}) }))
+    return
+  }
+  const lines = [
+    "CYRION/AI  KNOWLEDGE SYNC",
+    "",
+    `store        ${terminalSafe(path)}`,
+    `corpus       ${status.corpusVersion}`,
+    "",
+    "source                    documents  chunks",
+  ]
+  for (const report of reports) {
+    lines.push(
+      `  ${report.sourceId.padEnd(24)}${String(report.documents).padStart(9)}${String(report.chunks).padStart(8)}`,
+    )
+    for (const skipped of report.skipped) {
+      lines.push(`    skipped ${terminalSafe(skipped.reference, 60)}: ${terminalSafe(skipped.reason, 90)}`)
+    }
+  }
+  if (embedded) lines.push("", `embedded     ${embedded.embedded} of ${embedded.total} pending chunk(s) with ${terminalSafe(embedded.model)}`)
+  else lines.push("", "Retrieval is lexical. Bind roles.embedding in your model configuration and pass --embed for vectors.")
+  console.log(lines.join("\n"))
+}
+
+/** Vectors are optional. Saying why they are absent beats silently ranking worse. */
+async function knowledgeEmbed(store: KnowledgeStore): Promise<{ model: string; embedded: number; total: number }> {
+  const config = await findModelConfig()
+  if (!config) throw new Error(`--embed needs a model configuration. ${MODEL_SETUP_HINT}`)
+  if (!config.roles.embedding) {
+    throw new Error("--embed needs roles.embedding in the model configuration; no other role is used for vectors.")
+  }
+  const client = createEmbeddingClient(config, Bun.env)
+  const result = await embedPending(store, client, {
+    onProgress: (done, total) => {
+      if (!args.includes("--json") && done % 64 === 0) console.error(`cyrion: embedded ${done}/${total}`)
+    },
+  })
+  return { model: client.model, ...result }
+}
+
+async function knowledgeSearchCommand(store: KnowledgeStore): Promise<void> {
+  const query = (positionalArgs(2, ["--json", "--yes", "--embed"]).join(" ") || readFlag("--query") || "").trim()
+  if (!query.trim()) throw new Error('knowledge search needs a query: cyrion knowledge search "object level authorization"')
+  const k = Number(readFlag("--k") ?? 5)
+  const embedder = await optionalEmbedder()
+  const result = await store.search(query, { k, ...(embedder ? { embedder } : {}) })
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(result))
+    return
+  }
+  const lines = [
+    "CYRION/AI  KNOWLEDGE",
+    "",
+    `query        ${terminalSafe(result.query)}`,
+    `mode         ${result.mode.toUpperCase()}`,
+    `corpus       ${result.corpusVersion}`,
+    "",
+  ]
+  if (!result.hits.length) lines.push("No snippet matched. Try different terms, or sync a source that covers this.")
+  for (const [index, hit] of result.hits.entries()) {
+    lines.push(
+      `${String(index + 1).padStart(2)}. ${terminalSafe(hit.title, 70)}`,
+      `    ${terminalSafe(hit.reference, 100)}${hit.heading ? `  ·  ${terminalSafe(hit.heading, 50)}` : ""}`,
+      ...terminalSafe(hit.snippet, 600).split("\n").map((line) => `    ${line}`),
+      "",
+    )
+  }
+  console.log(lines.join("\n"))
+}
+
+function knowledgeForget(store: KnowledgeStore): void {
+  const id = readFlag("--source")
+  if (!id) throw new Error("knowledge forget needs --source <id>")
+  const removed = store.forget(id)
+  console.log(`Removed ${removed} document(s) ingested under ${terminalSafe(id)}.`)
+}
+
+function knowledgeStatus(store: KnowledgeStore, path: string): void {
+  const status = store.status()
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ path, ...status, documents: store.documents() }))
+    return
+  }
+  const lines = [
+    "CYRION/AI  KNOWLEDGE",
+    "",
+    `store        ${terminalSafe(path)}`,
+    `corpus       ${status.corpusVersion}`,
+    `documents    ${status.documents}`,
+    `chunks       ${status.chunks}`,
+    `retrieval    ${status.embedded ? `HYBRID  ${status.embedded}/${status.chunks} embedded with ${terminalSafe(status.embeddingModel ?? "")}` : "LEXICAL  no vectors stored"}`,
+    "",
+    "source                    documents  licence",
+  ]
+  for (const source of status.sources) {
+    lines.push(
+      `  ${source.id.padEnd(24)}${String(source.documents).padStart(9)}  ${terminalSafe(source.license, 40)}`,
+    )
+  }
+  const known = new Set(status.sources.map((source) => source.id))
+  const available = builtInSources.filter((source) => !known.has(source.id))
+  if (available.length) {
+    lines.push("", "not ingested", ...available.map((source) => `  ${source.id.padEnd(24)}${terminalSafe(source.name, 60)}`))
+    lines.push("", `cyrion knowledge sync --source ${available[0]!.id}`)
+  }
+  console.log(lines.join("\n"))
+}
+
+/**
+ * Sources this sync will ingest.
+ *
+ * `--source` names built-in descriptors; `--from` ingests a directory the
+ * operator already has, which is how a private methodology enters the corpus
+ * without being published; `--sources` reads a file of descriptors, validated
+ * the same way a skill pack is.
+ */
+async function selectedSources(): Promise<KnowledgeSource[]> {
+  const from = readFlag("--from")
+  if (from) {
+    const root = absolute(from)
+    if (!existsSync(root)) throw new Error(`Knowledge directory not found: ${root}`)
+    return [{
+      id: readFlag("--source") ?? "operator",
+      name: readFlag("--name") ?? `Operator corpus (${root.split("/").pop() ?? "local"})`,
+      license: readFlag("--license") ?? "operator-supplied",
+      origin: "local",
+      path: root,
+      ...(readFlag("--extensions") ? { extensions: readFlag("--extensions")!.split(",") } : {}),
+    }]
+  }
+
+  const file = readFlag("--sources")
+  if (file) {
+    const value: unknown = await Bun.file(absolute(file)).json()
+    if (!Array.isArray(value)) throw new Error(`${file} must contain an array of sources`)
+    return value.map((entry, index) => {
+      const error = knowledgeSourceError(entry)
+      if (error) throw new Error(`${file} entry ${index} is invalid: ${error}`)
+      return entry as KnowledgeSource
+    })
+  }
+
+  const requested = readFlag("--source")
+  if (requested) {
+    const source = sourceById(requested)
+    if (!source) {
+      throw new Error(
+        `Unknown source ${requested}. Available: ${builtInSources.map((entry) => entry.id).join(", ")}.`,
+      )
+    }
+    return [source]
+  }
+  // With no selection, only what is already on this machine is ingested. A bare
+  // `sync` must not reach out to the network on its own.
+  return builtInSources.filter((source) => source.origin === "local")
+}
+
 async function runTools(): Promise<void> {
   const host = await detectHost()
   const requested = readFlag("--sandbox")
@@ -1393,10 +2213,15 @@ async function runTools(): Promise<void> {
   }
   const kind: SandboxKind = (requested as SandboxKind | undefined)
     ?? (host.securityDistribution || !host.containerEngine ? "local" : "container")
-  const report = await describeSandbox(kind, host)
+  const report = await describeSandbox(kind, host, {
+    ...(kind === "container" ? { image: workerImage(), ...(await workerImagePin()) } : {}),
+  })
 
   const runner = new LocalToolRunner({ allowedBinaries: binariesFor(toolCatalog.map((tool) => tool.capability)) })
   const rows = await Promise.all(toolCatalog.map(async (tool) => {
+    // A capability with no adapter cannot be granted, whatever is installed for
+    // it. Saying so here is the difference between a catalog and a wish list.
+    if (tool.planned) return { tool, state: "planned" as const }
     if (!tool.binary) return { tool, state: "built-in" as const }
     const info = await runner.lookup(tool.binary).catch(() => undefined)
     return { tool, state: info ? ("installed" as const) : ("missing" as const), ...(info ? { info } : {}) }
@@ -1438,9 +2263,11 @@ async function runTools(): Promise<void> {
   ]
   for (const row of rows) {
     const version = "info" in row && row.info?.version ? `  ${terminalSafe(row.info.version, 48)}` : ""
-    const state = row.state === "built-in"
-      ? "BUILT-IN"
-      : row.state === "installed" ? "INSTALLED" : row.tool.optional ? "MISSING (optional)" : "MISSING"
+    const state = row.state === "planned"
+      ? "NOT IMPLEMENTED YET"
+      : row.state === "built-in"
+        ? "BUILT-IN"
+        : row.state === "installed" ? "INSTALLED" : row.tool.optional ? "MISSING (optional)" : "MISSING"
     lines.push(`  ${row.tool.capability.padEnd(20)}${(row.tool.binary || "-").padEnd(12)}${state}${version}`)
   }
   if (missing.length) {
@@ -1470,17 +2297,15 @@ async function runScope(): Promise<void> {
   if (policyError) throw new Error(policyError)
 
   if (subcommand === "lock") {
-    const attestation = readFlag("--attest")
-    if (!attestation) {
-      throw new Error('scope lock requires --attest "who authorized this engagement, and under what reference"')
-    }
-    const lock = createScopeLock(manifest, attestation)
+    // `--attest` is optional. A lock is worth writing for the scope hash alone,
+    // and whether an authorization record belongs in it is the operator's call.
+    const lock = createScopeLock(manifest, readFlag("--attest"))
     const output = absolute(readFlag("--out") ?? "scope.lock")
     await Bun.write(output, `${JSON.stringify(lock, null, 2)}\n`)
     console.log([
       `Scope locked for ${terminalSafe(manifest.id)}`,
       `  hash        ${lock.scopeHash}`,
-      `  attestation ${terminalSafe(lock.attestation)}`,
+      ...(lock.attestation ? [`  attestation ${terminalSafe(lock.attestation)}`] : []),
       `  written     ${terminalSafe(output)}`,
     ].join("\n"))
     return
@@ -1753,6 +2578,29 @@ function statusSummary(
   }
 }
 
+/**
+ * Positional arguments, with flags and the values they consume removed.
+ *
+ * A search query is words, and words sit next to `--k 3` on the same line.
+ * Filtering only on a leading dash would fold the 3 into the query and search
+ * for something the operator never typed.
+ */
+function positionalArgs(from: number, booleanFlags: readonly string[]): string[] {
+  const positional: string[] = []
+  for (let index = from; index < args.length; index += 1) {
+    const value = args[index]!
+    if (!value.startsWith("-")) {
+      positional.push(value)
+      continue
+    }
+    const name = value.split("=")[0]!
+    // `--flag=value` carries its own value; a bare flag that takes one eats the
+    // next argument.
+    if (!value.includes("=") && !booleanFlags.includes(name)) index += 1
+  }
+  return positional
+}
+
 function readFlag(name: string): string | undefined {
   const index = args.indexOf(name)
   if (index < 0) return undefined
@@ -1796,41 +2644,60 @@ function usage(): string {
     "              [--scope-lock <path>]",
     "  cyrion providers [--json] [--check] [--select]",
     "  cyrion models [--models <path>] [--json] [--check] [--probe]",
-    "  cyrion scan [--target <url>] [--attest <text>] [--capabilities <list>]",
-    "              [--sandbox local|container] [--mode autonomous|supervised]",
-    "              [--out <directory>] [--dry-run] [--headless]",
+    "  cyrion hack <target> [--capabilities <list>] [--sandbox local|container]",
+    "                       [--mode autonomous|supervised] [--out <directory>]",
+    "                       [--dry-run] [--headless]      (alias: cyrion scan)",
     "  cyrion engage --scope <manifest> [--sandbox local|container] [--skills <dir>]",
     "                [--planner assessment|llm|llm-author] [--workers capability|llm]",
     "                [--model-timeout <ms>]",
     "                [--mode autonomous|supervised] [--approve-all] [--scope-lock <path>]",
     "                [--state <sqlite-path>] [--artifacts <directory>] [--headless]",
-    "                [--allow-unsupervised-poc]",
+    "                [--mcp <path>]",
     "  cyrion replay <finding-id> [--manifest <path>] [--artifacts <directory>]",
     "                [--bundle <path>] [--sandbox local|container] [--json]",
+    "  cyrion bench [--lab imperfect,clean,partial] [--sandbox local|container]",
+    "               [--planner assessment|llm|llm-author] [--workers capability|llm]",
+    "               [--out <directory>] [--report <path>] [--json]",
     "  cyrion ci --scope <manifest> [--fail-on critical|high|medium|low|info]",
     "            [--planner assessment|llm|llm-author] [--workers capability|llm]",
     "            [--fail-on-unresolved] [--formats markdown,json,html,sarif,junit,csv]",
     "            [--report <directory>] [--sandbox local|container] [--json] [--verbose]",
+    "            [--mcp <path>]",
     "  cyrion tools [--sandbox local|container] [--json] [--check]",
+    "  cyrion knowledge status [--knowledge <path>] [--json]",
+    "  cyrion knowledge sync [--source <id>] [--from <directory>] [--sources <path>]",
+    "                        [--embed] [--knowledge <path>] [--json]",
+    "  cyrion knowledge search <query> [--k <n>] [--knowledge <path>] [--json]",
+    "  cyrion knowledge forget --source <id> [--knowledge <path>]",
     "  cyrion probe --capability <name> --target <expression> [--manifest <path>]",
     "               [--sandbox local|container] [--json]",
     "  cyrion scope check [--manifest <path>] [--target <expression>] [--json] [--check]",
-    "  cyrion scope lock --attest <text> [--manifest <path>] [--out <path>]",
+    "  cyrion scope lock [--attest <text>] [--manifest <path>] [--out <path>]",
     "  cyrion mcp serve --state <sqlite-path> --engagement <id> [--artifacts <directory>]",
+    "  cyrion mcp serve --scope <manifest> [--scope-lock <path>]",
+    "                   [--sandbox local|container] [--state <sqlite-path>]",
+    "                   [--artifacts <directory>] [--skills <dir>] [--mcp <path>]",
     "  cyrion mcp list [--config <path>] [--server <id>] [--manifest <path>] [--json]",
     "  cyrion mcp call --tool <name> [--config <path>] [--server <id>] [--input <json>] [--json]",
+    "  cyrion watch <engagement-id> --state <sqlite-path> [--artifacts <directory>]",
+    "               [--interval <ms>] [--until-finished] [--headless]",
     "  cyrion status <engagement-id> --state <sqlite-path> [--json]",
     "  cyrion report <engagement-id> --state <sqlite-path>",
     "                [--format markdown|json|html|sarif|junit|csv] [--out <path>] [--fail-on <severity>]",
     "  cyrion version",
     "",
-    "`cyrion scan` with no flags opens a form: target, capabilities, sandbox, mode, and who authorized it.",
+    "`cyrion hack <target>` needs nothing else: every capability the target kind supports, autonomous, in a container.",
+    "`cyrion scan` with no target opens a form for the same choices.",
+    "`mcp serve --scope <manifest>` also serves start_engagement for that engagement.",
+    "An MCP tool in mcp.json answers as the capability it declares, and only when the manifest granted that name.",
     "Fixture scenarios: known-positive, clean, rejected, incomplete",
     "OpenCode and llm planning or worker review may make billable model requests.",
     "Headless supervised runs require --approve-all.",
-    "poc.run is off unless the manifest grants it, and supervised unless --allow-unsupervised-poc.",
+    "--sandbox defaults to container wherever an engine is present; the worker image is pulled on first use.",
     "cyrion ci exits non-zero when the gate fails; reports are written either way.",
     "--fresh replaces artifacts written by an earlier fixture version.",
+    "`cyrion knowledge sync` with no --source ingests only what is already on this machine.",
+    "knowledge.search is refused before a run starts when no corpus has been built.",
   ].join("\n")
 }
 
@@ -1844,11 +2711,14 @@ try {
   else if (command === "models") await runModels()
   else if (command === "scope") await runScope()
   else if (command === "tools") await runTools()
+  else if (command === "knowledge") await runKnowledge()
   else if (command === "probe") await runProbe()
-  else if (command === "engage") await runEngagement()
+  else if (command === "engage") await runEngagementSession()
   else if (command === "replay") await runReplay()
   else if (command === "ci") await runCi()
-  else if (command === "scan") await runScan()
+  else if (command === "scan" || command === "hack") await runScan()
+  else if (command === "bench") await runBench()
+  else if (command === "watch") await runWatch()
   else if (command === "mcp") await runMcp()
   else if (command === "demo") await runDemo()
   else if (command === "status") runStatus()

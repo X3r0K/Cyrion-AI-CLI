@@ -5,17 +5,33 @@
 set -euo pipefail
 
 IMAGE="${CYRION_WORKER_IMAGE:-cyrion/kali-worker:0.1}"
+# The Kali the worker is built from. Override to use your own mirror or a
+# hardened base; the verification below applies whatever it is.
+BASE_IMAGE="${CYRION_WORKER_BASE:-vxcontrol/kali-linux:latest}"
 ENGINE="${CYRION_CONTAINER_ENGINE:-docker}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REQUIRED=(curl nmap openssl ffuf)
+REQUIRED=(curl nmap openssl ffuf sqlmap python3)
 OPTIONAL=(katana dnsx semgrep grype)
 
 echo "building ${IMAGE} with ${ENGINE}"
-"${ENGINE}" build -f "${ROOT}/containers/Dockerfile.worker" -t "${IMAGE}" "${ROOT}/containers"
+echo "  base ${BASE_IMAGE}"
+"${ENGINE}" build \
+  --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+  -f "${ROOT}/containers/Dockerfile.worker" -t "${IMAGE}" "${ROOT}/containers"
 
 manifest="${ROOT}/containers/worker-manifest.json"
+# The identity of what was just built. A tag can be moved; this cannot, so a
+# later run can say whether the image it is about to use is the measured one.
+IMAGE_ID="$("${ENGINE}" image inspect "${IMAGE}" --format '{{.Id}}' 2>/dev/null || true)"
+IMAGE_DIGEST="$("${ENGINE}" image inspect "${IMAGE}" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null || true)"
+
 echo "{" > "${manifest}"
 echo "  \"image\": \"${IMAGE}\"," >> "${manifest}"
+echo "  \"base\": \"${BASE_IMAGE}\"," >> "${manifest}"
+echo "  \"id\": \"${IMAGE_ID}\"," >> "${manifest}"
+echo "  \"repoDigest\": \"${IMAGE_DIGEST}\"," >> "${manifest}"
+# Pinning is a decision about a published image, made when it is published.
+echo "  \"pinned\": ${CYRION_WORKER_PINNED:-false}," >> "${manifest}"
 echo "  \"builtAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"," >> "${manifest}"
 echo "  \"tools\": {" >> "${manifest}"
 
@@ -25,7 +41,10 @@ first=1
 record() {
   local binary="$1" required="$2" output="" version="" flag
   for flag in --version -version -V -v; do
-    output="$("${ENGINE}" run --rm --entrypoint "${binary}" "${IMAGE}" "${flag}" 2>&1 || true)"
+    # As uid 1000, which is how an engagement runs it. A tool that answers as
+    # root and not as the worker is a tool that fails at the first task, and
+    # finding that here is the entire point of this check.
+    output="$("${ENGINE}" run --rm --user 1000:1000 --entrypoint "${binary}" "${IMAGE}" "${flag}" 2>&1 || true)"
     case "${output}" in
       *"executable file not found"*|*"no such file or directory"*) output=""; continue;;
     esac
@@ -49,6 +68,16 @@ record() {
 
 for binary in "${REQUIRED[@]}"; do record "${binary}" required; done
 for binary in "${OPTIONAL[@]}"; do record "${binary}" optional; done
+
+# The shell is checked by using it, not by asking its version. `sh -V` and
+# `sh -v` are valid dash flags that print nothing, so a version probe reports a
+# perfectly good shell as missing — and `shell.exec` runs `sh -c` anyway, so
+# running one is the check that matches what the image is for.
+shell_probe="$("${ENGINE}" run --rm --user 1000:1000 --entrypoint sh "${IMAGE}" -c 'echo cyrion-shell-ok' 2>&1 || true)"
+case "${shell_probe}" in
+  *cyrion-shell-ok*) echo "  ok   sh: runs sh -c" ;;
+  *) echo "  FAIL sh cannot run a command in ${IMAGE}: ${shell_probe}" >&2; exit 1 ;;
+esac
 
 echo "" >> "${manifest}"
 echo "  }" >> "${manifest}"

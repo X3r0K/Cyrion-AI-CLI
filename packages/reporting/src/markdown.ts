@@ -70,6 +70,21 @@ export function renderMarkdownReport(snapshot: EngagementSnapshot, context: Repo
     for (const tool of report.environment.tools) lines.push(`| ${inline(tool.name)} | ${inline(tool.version)} |`)
     lines.push("")
   }
+  if (report.environment.knowledge) {
+    const knowledge = report.environment.knowledge
+    lines.push(
+      "### Knowledge base",
+      "",
+      `- Corpus: \`${inline(knowledge.corpusVersion)}\` — ${knowledge.documents} document(s), ${knowledge.chunks} chunk(s)`,
+      `- Retrieval: ${inline(knowledge.retrieval)}`
+        + (knowledge.embeddingModel ? ` via \`${inline(knowledge.embeddingModel)}\`` : ""),
+      "",
+      "| Source | Licence | Documents |",
+      "| --- | --- | ---: |",
+      ...knowledge.sources.map((source) => `| ${inline(source.id)} | ${inline(source.license)} | ${source.documents} |`),
+      "",
+    )
+  }
 
   lines.push(
     "## Budgets",

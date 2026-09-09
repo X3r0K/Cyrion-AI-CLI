@@ -1,14 +1,19 @@
 import { createHash } from "node:crypto"
 import { promises as dns } from "node:dns"
 import {
+  POC_REDACTED,
   POC_VERSION,
   assertPocPlan,
+  isSecretHeader,
+  redactHeaders,
   type PocBundle,
+  type PocExpectation,
   type PocPlan,
   type PocStep,
   type PocStepRecord,
   type PocVerdict,
   type ToolExecutionRequest,
+  type ToolProgress,
 } from "@cyrion/contracts"
 import { checkPinnedAddress, evaluateScope, isAddress, parseTarget, pinAddresses, type TargetPin } from "@cyrion/scope"
 import type { CapabilityAdapter, CapabilityContext, CapabilityResult } from "./types"
@@ -40,6 +45,7 @@ export const pocRun: CapabilityAdapter = {
     request: ToolExecutionRequest,
     context: CapabilityContext,
     signal: AbortSignal,
+    progress?: ToolProgress,
   ): Promise<CapabilityResult> {
     const decision = evaluateScope(context.scope, request.target)
     if (!decision.allowed) throw new Error(`poc.run refused: ${decision.reason}`)
@@ -91,6 +97,7 @@ export const pocRun: CapabilityAdapter = {
       if (signal.aborted) throw signal.reason
       if (index > 0) await Bun.sleep(STEP_INTERVAL_MS)
 
+      progress?.(`step ${index + 1} of ${plan.steps.length}: ${step.description}`)
       const argv = buildStepArgv(step, pins, stepTimeoutMs)
       const result = await context.runner.run({
         argv,
@@ -106,11 +113,13 @@ export const pocRun: CapabilityAdapter = {
         ? judge(step, parsed, result.truncated)
         : { met: false, detail: curlFailure(result.exitCode, result.stderr, result.timedOut), conclusive: false }
 
+      const safeArgv = redactArgv(argv)
       const captured = await context.evidence.capture({
         engagementId: request.engagementId,
         id: context.nextEvidenceId("E"),
         kind: "response",
-        content: `${argv.join(" ")}\n\n${transcript}${result.stderr ? `\n[stderr] ${result.stderr}` : ""}\n`,
+        content: `${safeArgv.join(" ")}\n\n${redactTranscript(transcript)}`
+          + `${result.stderr ? `\n[stderr] ${result.stderr}` : ""}\n`,
         contentType: "text/plain",
         source: request.agentId,
       })
@@ -120,8 +129,12 @@ export const pocRun: CapabilityAdapter = {
       records.push({
         id: step.id,
         description: step.description,
-        argv,
-        request: { method: step.method, url: step.url, headers: { "user-agent": USER_AGENT, ...(step.headers ?? {}) } },
+        argv: safeArgv,
+        request: {
+          method: step.method,
+          url: step.url,
+          headers: redactHeaders({ "user-agent": USER_AGENT, ...(step.headers ?? {}) }),
+        },
         ...(parsed
           ? {
             response: {
@@ -198,6 +211,7 @@ export const pocRun: CapabilityAdapter = {
         })),
       },
       evidence,
+      outcome: `${verdict} · ${records.length} step${records.length === 1 ? "" : "s"} · bundle ${bundleEvidence.id}`,
     }
   },
 }
@@ -262,21 +276,79 @@ export function buildStepArgv(step: PocStep, pins: readonly TargetPin[], timeout
     "--globoff",
     "--http1.1",
     "--proto", "=http,https",
-    // A redirect is a different request against a different target; scope
-    // decides whether it may be made, so it is never followed here.
-    "--max-redirs", "0",
+    // Followed, bounded. An authentication bypass usually lands through a
+    // redirect, so refusing to follow one made the tool unable to demonstrate
+    // the thing it was looking for. Each hop is still held to the pinned
+    // addresses, and the transcript records every one.
+    "--location",
+    "--max-redirs", String(MAX_REDIRECTS),
     "--connect-timeout", String(CONNECT_TIMEOUT_SECONDS),
     "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
     "--user-agent", USER_AGENT,
   ]
   if (step.method === "HEAD") argv.push("--head")
   else argv.push("--include", "--request", step.method)
-  if (pin && !isAddress(hostname)) {
-    for (const address of pin.addresses) argv.push("--resolve", `${hostname}:${port}:${address}`)
-  }
+  if (pin && !isAddress(hostname)) argv.push("--resolve", resolveEntry(hostname, port, pin.addresses))
   for (const [name, value] of Object.entries(step.headers ?? {})) argv.push("--header", `${name}: ${value}`)
+  // `--data-binary` rather than `--data`: a payload must arrive exactly as the
+  // plan wrote it, and `--data` strips newlines.
+  if (step.body !== undefined) argv.push("--data-binary", step.body)
   argv.push(step.url)
   return argv
+}
+
+/** Enough for a login chain to land, few enough that a loop is caught. */
+const MAX_REDIRECTS = 5
+
+/**
+ * Strips a credential a server echoed back at us.
+ *
+ * `set-cookie` on a login response is the common one: the transcript is the
+ * proof that authentication worked, and it should not also be a working
+ * session for whoever reads the report.
+ */
+export function redactTranscript(transcript: string): string {
+  return transcript.replace(
+    /^([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)$/gm,
+    (line, name: string) => (isSecretHeader(name) ? `${name}: ${POC_REDACTED}` : line),
+  )
+}
+
+/**
+ * argv with every secret replaced, for anything a reader will see.
+ *
+ * The bundle exists to be handed to a client. The request that proves the
+ * finding has to be in it; the operator's session token does not, and a bundle
+ * that carries one cannot safely be attached to a report.
+ */
+export function redactArgv(argv: readonly string[]): string[] {
+  const safe: string[] = []
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]!
+    safe.push(value)
+    if (value !== "--header") continue
+    const header = argv[index + 1]
+    if (header === undefined) continue
+    const name = header.slice(0, header.indexOf(":"))
+    safe.push(isSecretHeader(name.trim()) ? `${name}: ${POC_REDACTED}` : header)
+    index += 1
+  }
+  return safe
+}
+
+/**
+ * One `--resolve` entry holding every pinned address.
+ *
+ * Separate flags for the same host and port do not fall back: curl commits to
+ * the first set and fails outright when those addresses are unreachable, which
+ * is what happens to an IPv6 answer inside an IPv4-only sandbox. A single
+ * comma-separated entry tries them in turn. IPv6 is bracketed because the entry
+ * is itself colon-separated, and an unbracketed address misparses the whole of
+ * it.
+ */
+export function resolveEntry(hostname: string, port: string, addresses: readonly string[]): string {
+  const ordered = [...addresses].sort((left, right) => Number(left.includes(":")) - Number(right.includes(":")))
+  return `${hostname}:${port}:${ordered.map((address) => (address.includes(":") ? `[${address}]` : address)).join(",")}`
 }
 
 export interface ParsedHttpResponse {
@@ -317,52 +389,122 @@ export function parseHttpResponse(output: string): ParsedHttpResponse | undefine
   return status === undefined ? undefined : { status, headers, body: rest }
 }
 
-interface StepOutcome {
+export interface StepOutcome {
   met: boolean
   detail: string
   /** False when the run could not decide, which keeps the verdict inconclusive. */
   conclusive: boolean
+  /**
+   * The conditions that held and the ones that did not, in the terms the plan
+   * declared them.
+   *
+   * `detail` says what the target actually returned, which is what a proof
+   * bundle needs. These say what was claimed, which is what a finding's summary
+   * needs: a sentence a reader trusts should not be written by the target.
+   */
+  matched: string[]
+  failed: string[]
 }
 
 /** Compares one response against the step's stated conditions, and says why. */
 export function judge(step: PocStep, response: ParsedHttpResponse, truncated: boolean): StepOutcome {
-  const expect = step.expect
+  return judgeExpectation(step.expect, response, truncated)
+}
+
+/**
+ * Compares one response against one expectation.
+ *
+ * Everything stated has to hold, and — when the expectation offers
+ * alternatives — at least one of them as well. The alternatives are judged the
+ * same way as anything else, one level deep, so "any one of these five headers
+ * is absent" is decided by the same code that decides every other condition.
+ */
+export function judgeExpectation(
+  expect: PocExpectation,
+  response: ParsedHttpResponse,
+  truncated: boolean,
+): StepOutcome {
   const failures: string[] = []
   const met: string[] = []
-  const bodyChecked = expect.bodyIncludes !== undefined || expect.bodyExcludes !== undefined
+  const matched: string[] = []
+  const failed: string[] = []
+  const bodyChecked = usesBody(expect)
   if (truncated && bodyChecked) {
-    return { met: false, detail: "the response body was truncated, so the body condition could not be decided", conclusive: false }
+    return {
+      met: false,
+      detail: "the response body was truncated, so the body condition could not be decided",
+      conclusive: false,
+      matched: [],
+      failed: [],
+    }
+  }
+
+  const record = (ok: boolean, observed: string, declared: string): void => {
+    ;(ok ? met : failures).push(observed)
+    ;(ok ? matched : failed).push(declared)
   }
 
   if (expect.status) {
     const ok = expect.status.includes(response.status)
-    ;(ok ? met : failures).push(`status ${response.status}${ok ? "" : ` is not ${expect.status.join(" or ")}`}`)
+    record(
+      ok,
+      `status ${response.status}${ok ? "" : ` is not ${expect.status.join(" or ")}`}`,
+      `status ${expect.status.join(" or ")}`,
+    )
   }
   for (const name of expect.headersPresent ?? []) {
     const present = response.headers[name.toLowerCase()] !== undefined
-    ;(present ? met : failures).push(`${name.toLowerCase()} ${present ? "present" : "absent"}`)
+    record(present, `${name.toLowerCase()} ${present ? "present" : "absent"}`, `${name.toLowerCase()} present`)
   }
   for (const name of expect.headersAbsent ?? []) {
     const absent = response.headers[name.toLowerCase()] === undefined
-    ;(absent ? met : failures).push(`${name.toLowerCase()} ${absent ? "absent" : "present"}`)
+    record(absent, `${name.toLowerCase()} ${absent ? "absent" : "present"}`, `${name.toLowerCase()} absent`)
   }
   if (expect.contentType !== undefined) {
     const actual = response.headers["content-type"] ?? ""
     const ok = actual.toLowerCase().includes(expect.contentType.toLowerCase())
-    ;(ok ? met : failures).push(`content type ${actual || "not sent"}${ok ? "" : ` does not contain ${expect.contentType}`}`)
+    record(
+      ok,
+      `content type ${actual || "not sent"}${ok ? "" : ` does not contain ${expect.contentType}`}`,
+      `content type containing ${expect.contentType}`,
+    )
   }
   if (expect.bodyIncludes !== undefined) {
     const ok = response.body.includes(expect.bodyIncludes)
-    ;(ok ? met : failures).push(`body ${ok ? "contains" : "does not contain"} the expected marker`)
+    record(ok, `body ${ok ? "contains" : "does not contain"} the expected marker`, "the declared marker in the body")
   }
   if (expect.bodyExcludes !== undefined) {
     const ok = !response.body.includes(expect.bodyExcludes)
-    ;(ok ? met : failures).push(`body ${ok ? "omits" : "contains"} the excluded text`)
+    record(ok, `body ${ok ? "omits" : "contains"} the excluded text`, "the declared text absent from the body")
+  }
+
+  if (expect.anyOf?.length) {
+    const alternatives = expect.anyOf.map((entry) => judgeExpectation(entry, response, truncated))
+    const held = alternatives.filter((outcome) => outcome.met)
+    if (held.length) {
+      met.push(held.flatMap((outcome) => outcome.met ? [outcome.detail.replace(/^reproduced: /, "")] : []).join(", "))
+      matched.push(...held.flatMap((outcome) => outcome.matched))
+    } else {
+      // Which alternative failed and how is the whole point of the sentence: a
+      // reader needs "the headers were present", not a count.
+      failures.push(
+        `none of the alternatives held (${alternatives
+          .map((outcome) => outcome.detail.replace(/^not reproduced: /, ""))
+          .join("; ")})`,
+      )
+      failed.push(...alternatives.flatMap((outcome) => outcome.failed))
+    }
   }
 
   return failures.length
-    ? { met: false, detail: `not reproduced: ${failures.join("; ")}`, conclusive: true }
-    : { met: true, detail: `reproduced: ${met.join("; ")}`, conclusive: true }
+    ? { met: false, detail: `not reproduced: ${failures.join("; ")}`, conclusive: true, matched, failed }
+    : { met: true, detail: `reproduced: ${met.join("; ")}`, conclusive: true, matched, failed }
+}
+
+/** Whether deciding this expectation needs the body, alternatives included. */
+function usesBody(expect: PocExpectation): boolean {
+  if (expect.bodyIncludes !== undefined || expect.bodyExcludes !== undefined) return true
+  return (expect.anyOf ?? []).some((entry) => entry.bodyIncludes !== undefined || entry.bodyExcludes !== undefined)
 }
 
 function curlFailure(exitCode: number, stderr: string, timedOut: boolean): string {
@@ -396,9 +538,12 @@ function renderScript(plan: PocPlan, records: readonly PocStepRecord[]): string 
     `# Cyrion Community proof of concept for ${plan.findingId}.`,
     `# ${safeText(plan.title)}`,
     "#",
-    "# Reads only: every request is a GET, HEAD, or OPTIONS, redirects are not",
-    "# followed, and each hostname is pinned to the address recorded at capture.",
-    "# Run it only against the target the engagement authorized.",
+    "# Each hostname is pinned to the address recorded at capture, and redirects",
+    "# are followed to a bounded depth. Steps may change state: read them before",
+    "# running this, and run it only against the target the engagement authorized.",
+    "#",
+    "# Any credential this exploit sent has been redacted. Where a step shows",
+    `# '${POC_REDACTED}', substitute your own before running it.`,
     "set -u",
     "",
   ]

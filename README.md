@@ -98,23 +98,47 @@ bun apps/cli/src/index.ts report ENG-0042 --state .cyrion/community.sqlite --for
 `markdown` and `json` and include normalized findings and evidence metadata,
 but deliberately omit artifact bodies.
 
+## Watching it happen
+
+Press `2` during a run for the Attack view — the engagement as it happens to the
+target, one line per exchange:
+
+```
+00:04 → web-01        http.probe https://app.example.test/
+00:04 ← web-01        http.probe https://app.example.test/            8ms
+                      200 text/html · 1.2 kB
+00:04 ! web-01        raised F-HEADERS-a845c387
+                      Missing browser protection headers
+00:06 ← validator-01  poc.run https://app.example.test/             520ms
+                      reproduced · 1 step · bundle E-0014
+```
+
+`→` a request, `←` what came back, `✗` a refusal and why, `!` a finding changing
+state. It follows the newest line until you scroll back. See
+[Product terminal](docs/TERMINAL.md).
+
 ## Starting a scan
 
 ```sh
-cyrion scan
+cyrion hack example.com
 ```
 
-A form asks for the address, what the scan may do, where it runs, and who
-authorized it. Press `s` and it starts. Or skip the form:
+That is the whole command. There is no manifest to write, no capability list to
+choose, and nothing to attest: the address is the decision, every capability the
+target kind supports is granted, and the run is autonomous in a container. The
+worker image is pulled the first time you need it.
 
-```sh
-cyrion scan --target https://example.com --attest "I own example.com, personal site"
-```
+`cyrion scan` with no target opens a form for the same choices, and
+`--capabilities`, `--sandbox` and `--mode` change them from the command line.
+See [Starting a scan](docs/SCANNING.md).
 
-Cyrion writes a manifest and a scope lock into `.cyrion/engagements`, binds your
-attestation to that exact scope by hash, and runs it. The two defaults only read
-the target; reproduction and port scanning are opt-in, and switching on
-reproduction makes the run supervised. See [Starting a scan](docs/SCANNING.md).
+**Authorization is yours.** Cyrion points at whatever you name, so run it only
+against systems you own or have written permission to test. What it does do is
+stay on the target you named: the scope is derived from your address, and every
+request, redirect and discovered link is held to it.
+
+The same form is under `Mission` in the terminal: press `n` to start the next
+assessment where you read the last one, without dropping back to a shell.
 
 ## Running an assessment
 
@@ -126,6 +150,18 @@ a report — all under the same controller enforcement the fixtures had.
 bun fixtures/lab/server.ts &          # a controlled target with two findable issues
 cyrion engage --scope fixtures/lab/engagement.json --sandbox local --headless
 ```
+
+Grant `http.crawl` and the run finds its own surface: recon follows the links
+the site publishes, and the skills are run against the endpoints it found. A
+link that leaves the approved scope is counted and never followed, and every
+discovered address is re-checked by the controller and again by the planner —
+reporting somewhere new is not permission to look at it.
+
+A skill can carry itself out. `checks` in a `*.skill.json` file state the request
+to make and the conditions that make the answer a finding, in the same
+vocabulary a proof-of-concept step uses — so one statement drives discovery,
+independent validation, and the replayable bundle, and a contributed methodology
+needs no change to any worker.
 
 Findings start as candidates. Only a validator moves one to confirmed, rejected,
 or inconclusive, working from the finding record rather than the discovering
@@ -200,18 +236,45 @@ that produced each finding, budgets granted against consumed, and
 reproducibility recorded separately from severity. See
 [Reports and CI gating](docs/REPORTING.md).
 
+## Knowledge a worker has to cite
+
+Cyrion can consult public standards while it works, without ever putting them
+in a prompt:
+
+```sh
+cyrion knowledge sync --source owasp-api-top10
+cyrion knowledge search "object level authorization"
+```
+
+Retrieval is a capability, not ambient context. A worker calls
+`knowledge.search` through the same gateway as any other tool, the whole
+retrieval is captured as evidence, and the snippets come back bounded and
+cited. The corpus lives on your machine — the repository ships the URL and the
+licence, never the bytes — and the report states which corpus version produced
+it. The citation lands on an observation, never on a finding: a standard
+explains why a check was run, and never stands in for what the target returned.
+See [Knowledge](docs/KNOWLEDGE.md).
+
 ## MCP, in both directions
 
 ```sh
 cyrion mcp serve --state .cyrion/engagement.sqlite --engagement ENG-1042
-cyrion mcp list --manifest engagement.json
+cyrion mcp serve --scope engagement.json
+cyrion engage --scope engagement.json --mcp mcp.json
 ```
 
-As a server, Cyrion exposes an engagement to another agent read-only —
-`start_engagement` is refused at the protocol level, and artifact text is
-withheld when it no longer matches its digest. As a client, `mcp.json` declares
-approved servers with an explicit tool allowlist mapped to capability names the
-manifest must already grant. See [MCP, in both directions](docs/MCP.md).
+As a server, Cyrion exposes an engagement to another agent read-only, and
+artifact text is withheld when it no longer matches its digest. Pointed at a
+manifest instead of a state database, it also serves `start_engagement` — for
+the engagement the operator already prepared. The caller picks nothing: scope,
+capabilities, sandbox, and mode were all decided before the server spoke.
+
+As a client, `mcp.json` declares approved servers with an explicit tool
+allowlist mapped to capability names the manifest must already grant, and a
+worker calls one through the same gateway as any other capability. What comes
+back is captured as evidence and recorded as a cited observation — never a
+finding, because Cyrion does not pretend to know what someone else's tool meant.
+See [MCP, in both directions](docs/MCP.md).
 
 ## Targets and scope
 
@@ -256,6 +319,23 @@ token, time, and task budgets apply either way. See [Models](docs/MODELS.md) for
 endpoint kinds, role routing, the structured-output ladder, and readiness
 checks.
 
+## Measured, not asserted
+
+```sh
+bun run bench
+```
+
+Three labs with ground truth kept outside the code being measured: one with
+known issues, one where everything is correct, and one that answers
+inconsistently. The harness reports precision, recall, and inconclusive rate
+**per methodology**, the reproduction rate of confirmed findings, cost and wall
+clock per finding, and the scope-violation count — which must be zero.
+
+Current results are in [BENCHMARKS.md](BENCHMARKS.md), regenerated from the code
+being released and reproducible from a clean clone. Recall there is a regression
+measure against what the labs contain, not a claim about finding unknown classes
+of issue, and the file says so.
+
 ## Packages
 
 - `apps/cli` — Cyrion terminal application.
@@ -273,6 +353,8 @@ checks.
 - `packages/capabilities` — typed capability adapters that build argv, enforce
   scope, and capture hashed evidence.
 - `packages/skills` — the methodology format, loader, and applicability rules.
+- `packages/knowledge` — the local corpus: ingest, chunking, SQLite storage with
+  full-text and optional vector search, and public-standard source descriptors.
 - `packages/assessment` — the skill-driven planner and the capability-backed
   workers.
 - `packages/reporting` — one versioned report record rendered as Markdown, JSON,
@@ -280,6 +362,8 @@ checks.
   and a gate for CI.
 - `packages/mcp` — JSON-RPC transport, the read-only engagement server, and the
   allowlisted client for operator-approved MCP servers.
+- `packages/benchmark` — scoring against lab ground truth: precision, recall,
+  and inconclusive rate per class, reproduction rate, and scope violations.
 - `packages/runtime-opencode` — pinned OpenCode session adapter and fixture runtime.
 - `workers` — credential-scrubbed subprocess entrypoints for safe fixture capabilities.
 - `agents` — intentionally concise public role prompts.

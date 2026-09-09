@@ -2,8 +2,13 @@
 
 A scanner tells you what it saw. A pentest tool shows you how to see it again.
 `poc.run` is how Cyrion does the second thing: a validator turns a candidate
-into a bounded reproduction, runs it, and stores the bundle that repeats it —
-so a confirmed finding arrives with the exact commands that prove it.
+into an exploit, runs it, and stores the bundle that repeats it — so a confirmed
+finding arrives with the exact commands that prove it.
+
+It is still a **plan** rather than a script a model wrote, because that is what
+makes a run reviewable before it happens and reproducible after. What changed is
+what a plan may do: any method, a body, a session, and a chain long enough to
+demonstrate a consequence.
 
 ```sh
 cyrion scope lock --manifest engagement.json --attest "Authorized by …, ticket SEC-1042"
@@ -11,25 +16,26 @@ cyrion engage --scope engagement.json --scope-lock scope.lock --sandbox local
 cyrion replay F-OBJECT-a845c387 --manifest engagement.json
 ```
 
-## It is off until you turn it on
+## Granting it
 
-`poc.run` is a manifest capability. It does nothing unless the approved scope
-names it:
+`poc.run` is a manifest capability, named in the approved scope:
 
 ```jsonc
 "capabilities": ["dns.lookup", "http.probe", "poc.run"]
 ```
 
-Granting it changes two things. The engagement runs **supervised** — every
-delegation waits for your approval — unless you pass `--allow-unsupervised-poc`
-and say so deliberately. And a `repository` engagement refuses to start with it
-at all: a static claim needs a runtime target before it can be confirmed.
+It is granted by default, like every other capability the target kind
+supports, and it does not change how the run is supervised: an assessment you
+started is an assessment you authorized. A `repository` engagement can carry it
+too, though nothing static becomes `confirmed` without a runtime target to
+reproduce it against.
 
 ## What a proof of concept is here
 
 It is a **plan**, not a script a model wrote. The plan is data the controller
-validates before anything runs, and the destructive primitives are absent from
-the vocabulary rather than discouraged in a prompt:
+validates before anything runs, and an operator can read the whole of it before
+it does — which is the point of keeping it declarative now that what it may do
+is no longer narrow:
 
 ```jsonc
 {
@@ -47,11 +53,15 @@ the vocabulary rather than discouraged in a prompt:
 }
 ```
 
-The contract admits `GET`, `HEAD`, and `OPTIONS` and nothing else. There is no
-request body field to carry a payload, no header that may carry a credential
-(`authorization`, `cookie`, `x-api-key`, and their relatives are refused by
-name), at most eight steps, and every step must state a condition — a proof that
-asserts nothing proves nothing.
+The contract admits every HTTP method, a request body, an authenticated session,
+and up to 64 steps — enough to log in, enumerate, escalate, and prove the
+consequence. Every step must still state a condition: a proof that asserts
+nothing proves nothing.
+
+A test that cannot write, cannot log in, and cannot follow a redirect cannot
+demonstrate a broken access control, which is most of what an engagement is for.
+So those constraints are gone. What replaced the credential rule is **redaction**
+rather than refusal, described below.
 
 `expect` is the whole judgement: `status`, `headersPresent`, `headersAbsent`,
 `contentType`, `bodyIncludes`, `bodyExcludes`. Every stated condition must hold.
@@ -64,11 +74,27 @@ Not by asking the model nicely — by refusing:
 | --- | --- |
 | Scope | Every step URL is re-validated; the first step must be the assigned target |
 | Pinning | Each hostname is held to the addresses this engagement pinned; a moved answer fails the run |
-| Redirects | `--max-redirs 0`. A redirect is a different request against a different target |
-| Rate | 500 ms between steps, one connection at a time — a reproduction, not a fuzz run |
+| Redirects | Followed to a depth of 5 — an authentication bypass usually lands through one — with every hop held to the pinned addresses |
+| Rate | 500 ms between steps, one connection at a time. A volume bound, not a capability one: exhausting a client's service is the one outcome no engagement wants and no finding needs |
 | Time | 5 s to connect, 15 s per step, and the gateway's own wall clock over the whole call |
 | Output | Bounded per step; a truncated body cannot decide a body condition, and says so |
-| Egress | In container mode the allowlist applies to the PoC exactly as it does to every other capability |
+| Egress | In container mode the allowlist applies to an exploit exactly as it does to every other capability |
+| Credentials | Sent as written, redacted everywhere the bundle is stored |
+
+## Credentials: sent, then redacted
+
+Testing authorization means authenticating, so a step may carry `authorization`,
+`cookie`, `x-api-key` and the rest. They are sent exactly as written.
+
+They are **not** in what you hand a client. Before anything reaches disk, Cyrion
+replaces the value of every secret header with `[redacted by cyrion]` — in the
+recorded argv, in the bundle's request record, and in the response transcript,
+which strips a `set-cookie` the server issued in reply. The header *name* stays,
+so a reader can see the request was authenticated.
+
+The old contract refused these headers outright, which prevented the leak by
+preventing the test. This keeps the test and prevents the leak: `REPRO.md` tells
+the reader to substitute their own credential where a redaction appears.
 
 ## Verdicts, and the honest third one
 

@@ -21,6 +21,8 @@ export interface CommandSpec {
   maxOutputBytes: number
   /** Added on top of a scrubbed base environment; the operator's env is never inherited. */
   env?: Record<string, string>
+  /** Receives stdout as it arrives, for tools that take minutes to answer. */
+  onOutput?: (chunk: string) => void
 }
 
 export interface CommandResult {

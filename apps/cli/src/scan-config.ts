@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 import type { EngagementManifest } from "@cyrion/contracts"
 import { isAddress, parseCidr, parseTarget } from "@cyrion/scope"
 
@@ -6,17 +8,34 @@ import { isAddress, parseCidr, parseTarget } from "@cyrion/scope"
 export const scanCapabilities = [
   { name: "dns.lookup", label: "Resolve and pin the host", safe: true },
   { name: "http.probe", label: "Fetch pages and read headers", safe: true },
+  { name: "http.request", label: "Ask the requests a skill's checks declare", safe: true },
+  { name: "http.crawl", label: "Follow the site's own links to find endpoints", safe: true },
   { name: "net.tls", label: "Inspect the TLS certificate", safe: true },
   { name: "poc.run", label: "Reproduce findings as replayable proof", safe: false },
   { name: "net.portscan", label: "Scan ports (noisy; hosts and ranges only)", safe: false },
+  { name: "web.fuzz", label: "Content discovery with a wordlist", safe: false },
+  { name: "vuln.scan", label: "Run nuclei templates against the target", safe: false },
+  { name: "sqli.test", label: "Test for injection with sqlmap", safe: false },
+  { name: "shell.exec", label: "Run commands the agent writes, in the sandbox", safe: false },
+  { name: "python.exec", label: "Write and run proof-of-concept exploits", safe: false },
+  { name: "repo.inventory", label: "Inventory a repository (repository targets only)", safe: true },
+  { name: "repo.scan", label: "Static analysis with semgrep (repository targets only)", safe: true },
+  { name: "repo.deps", label: "Known-vulnerable dependencies (repository targets only)", safe: true },
 ] as const
 
 export type ScanCapability = (typeof scanCapabilities)[number]["name"]
 
-/** What an operator has to decide before a scan can start. */
+/**
+ * What a scan runs with. Only the target is required.
+ *
+ * Everything else has an answer that is right often enough to be the default:
+ * an operator who typed an address wants that address assessed with whatever
+ * Cyrion can bring to it, not a form.
+ */
 export interface ScanInput {
   target: string
-  attestation: string
+  /** Kept only for the operator who wants the record; never required. */
+  attestation?: string
   capabilities: ScanCapability[]
   sandbox: "local" | "container"
   mode: "autonomous" | "supervised"
@@ -27,72 +46,68 @@ export interface ScanInput {
 
 export const defaultScanInput: ScanInput = {
   target: "",
-  attestation: "",
-  // The read-only pair: enough to inventory a site and check its responses,
-  // and nothing that repeats a condition against it.
-  capabilities: ["dns.lookup", "http.probe"],
-  sandbox: "local",
+  // Everything applicable to the target. A capability the target kind cannot
+  // use is dropped when the manifest is built, not asked about here.
+  capabilities: scanCapabilities.map((capability) => capability.name),
+  sandbox: "container",
   mode: "autonomous",
 }
 
 /**
  * Why this scan cannot start yet, in the operator's language.
  *
- * Every reason is something they can act on from the form, and authorization is
- * one of them: a scan without an attestation is refused here rather than at the
- * controller, so the requirement is visible before any work begins.
+ * The only thing that can be wrong now is the address. A capability that does
+ * not apply to the target kind is dropped rather than refused, because an
+ * operator who typed one address and got a list of complaints about a form they
+ * never filled in has learned nothing they wanted to know.
  */
 export function scanInputError(input: ScanInput): string | undefined {
-  const target = input.target.trim()
-  if (!target) return "Enter the address you are authorized to assess, such as https://example.com"
-  let parsed
+  const raw = input.target.trim()
+  if (!raw) return "Enter an address to assess, such as https://example.com, an IP range, or ./path/to/repo"
+  // Judge what will actually be scanned, not what was typed: `.` is a
+  // repository and `example.com` is an https origin.
+  const target = normalizeTarget(raw)
   try {
-    parsed = parseTarget(target)
+    parseTarget(target)
   } catch (error) {
     return error instanceof Error ? error.message : String(error)
-  }
-  if (parsed.kind === "repo") return "Repository targets are inventoried by a different profile, not by a web scan"
-  if (parsed.kind === "url" && parsed.scheme === "http" && !isLoopback(parsed.host)) {
-    return "Plain http to a remote host sends the assessment in cleartext; use https, or a loopback address for a local lab"
-  }
-  if (!input.capabilities.length) return "Choose at least one capability; a scan with none can observe nothing"
-  if (parsed.kind === "url" && input.capabilities.includes("net.portscan")) {
-    return "net.portscan needs a host or range target, not a URL. Remove it, or scan the host instead"
-  }
-  if (input.attestation.trim().length < 8) {
-    return "State who authorized this assessment and under what reference; it is recorded in the report"
   }
   return undefined
 }
 
 /**
- * Turns one approved address into a complete engagement.
+ * Turns one address into a complete engagement.
  *
- * The budgets are deliberately modest: a first scan of one site should finish,
- * not run until something stops it. Reproduction moves the run to supervised,
- * because a capability that repeats a condition against a live target is one an
- * operator should watch the first time.
+ * Capabilities are narrowed to the ones the target kind can actually use, so
+ * naming a repository does not carry `net.portscan` into the manifest and a URL
+ * does not carry `repo.inventory`. That narrowing is why the defaults can be
+ * "everything": the target decides what "everything" means.
  */
 export function buildScanManifest(input: ScanInput, now = new Date()): EngagementManifest {
   const error = scanInputError(input)
   if (error) throw new Error(error)
   const target = normalizeTarget(input.target.trim())
   const parsed = parseTarget(target)
-  const host = parsed.kind === "url" || parsed.kind === "host" ? parsed.host : "target"
-  const reproduces = input.capabilities.includes("poc.run")
+  const host = parsed.kind === "url" || parsed.kind === "host"
+    ? parsed.host
+    : parsed.root.split("/").filter(Boolean).at(-1) ?? "repository"
+  const applicable = new Set(applicableCapabilities(target))
+  const capabilities = input.capabilities.filter((capability) => applicable.has(capability))
 
   return {
     id: engagementId(target, now),
     name: input.name?.trim() || `Assessment of ${host}`,
     objective: input.objective?.trim()
-      || `Assess the approved surface at ${target} and independently validate every candidate finding.`,
-    profile: "web-api",
-    // Reproduction is supervised on a first run whatever the form said.
-    mode: reproduces ? "supervised" : input.mode,
+      || (parsed.kind === "repo"
+        ? `Inventory the approved repository at ${parsed.root} and record what it is built from.`
+        : `Assess the approved surface at ${target} and independently validate every candidate finding.`),
+    // A repository engagement is a different profile: nothing in it runs.
+    profile: parsed.kind === "repo" ? "repository" : "web-api",
+    mode: input.mode,
     scope: {
       targets: [target],
       excluded: [...(input.excluded ?? [])],
-      capabilities: [...input.capabilities],
+      capabilities,
     },
     budgets: {
       maxConcurrentAgents: 3,
@@ -117,6 +132,15 @@ export function buildScanManifest(input: ScanInput, now = new Date()): Engagemen
  */
 export function normalizeTarget(value: string): string {
   const raw = value.trim()
+  // A repository root is resolved here, once. A relative path in a manifest
+  // would mean something different from whichever directory the run started in,
+  // and the scope check and the capability would disagree about what was
+  // approved.
+  if (isRepositoryTarget(raw)) {
+    const path = raw.startsWith("repo:") ? raw.slice("repo:".length) : raw
+    const expanded = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path
+    return `repo:${resolve(expanded)}`
+  }
   if (isNetworkTarget(raw)) return raw
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`
   try {
@@ -142,10 +166,21 @@ export function engagementId(target: string, now: Date): string {
 function tryHost(target: string): string {
   try {
     const parsed = parseTarget(target)
-    return parsed.kind === "url" || parsed.kind === "host" ? parsed.host : "target"
+    if (parsed.kind === "url" || parsed.kind === "host") return parsed.host
+    // A checkout is named by its directory, which is what an operator calls it.
+    return parsed.root.split("/").filter(Boolean).at(-1) ?? "repository"
   } catch {
     return "target"
   }
+}
+
+/** A path an operator means as a checkout, rather than an address. */
+export function isRepositoryTarget(value: string): boolean {
+  if (value.startsWith("repo:")) return true
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false
+  // `.` and `..` are how an operator names the directory they are standing in.
+  if (value === "." || value === "..") return true
+  return value.startsWith("./") || value.startsWith("../") || value.startsWith("/") || value.startsWith("~/")
 }
 
 /** Shapes that are unambiguously a host or a range rather than a site. */
@@ -170,11 +205,6 @@ function splitPorts(value: string): [string, string | undefined] {
   return [value.slice(0, index), value.slice(index + 1)]
 }
 
-function isLoopback(host: string): boolean {
-  const clean = host.replace(/^\[|\]$/g, "").toLowerCase()
-  return clean === "localhost" || clean === "::1" || clean.startsWith("127.")
-}
-
 /** Capabilities that are safe to offer for the kind of target given. */
 export function applicableCapabilities(target: string): ScanCapability[] {
   let kind: string
@@ -184,6 +214,18 @@ export function applicableCapabilities(target: string): ScanCapability[] {
     kind = "url"
   }
   return scanCapabilities
-    .filter((capability) => capability.name !== "net.portscan" || kind === "host")
+    .filter((capability) => {
+      // Reads a checkout on disk; there is nothing to read without one.
+      if (capability.name.startsWith("repo.")) return kind === "repo"
+      // Needs an address to scan, which a URL target does not give it.
+      if (capability.name === "net.portscan") return kind === "host"
+      // Speak HTTP to one origin, so they need a URL rather than a range.
+      if (capability.name === "web.fuzz" || capability.name === "sqli.test") return kind === "url"
+      // A shell and a language apply to anything, including a checkout: the
+      // agent may want to build the thing before it assesses it.
+      if (capability.name === "shell.exec" || capability.name === "python.exec") return true
+      // Nothing else that speaks HTTP applies to a checkout on disk.
+      return kind !== "repo"
+    })
     .map((capability) => capability.name)
 }

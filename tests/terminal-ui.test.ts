@@ -9,6 +9,7 @@ import {
   formatEngagement,
   formatFindingDetail,
   formatFindings,
+  formatLaunch,
   formatMission,
   formatRootDispatch,
   formatSwarm,
@@ -27,6 +28,8 @@ import {
   viewNavigationDelta,
 } from "../apps/cli/src/navigation"
 import { createSettingsEditor } from "../apps/cli/src/settings-ui"
+import { createLaunchState } from "../apps/cli/src/launch-ui"
+import { defaultScanInput } from "../apps/cli/src/scan-config"
 
 const projectRoot = join(import.meta.dir, "..")
 
@@ -37,6 +40,27 @@ describe("product terminal state", () => {
     expect(viewNavigationDelta("]", true)).toBe(1)
     expect(isTextInputActive("dashboard", true)).toBe(true)
     expect(isTextInputActive("chat", false)).toBe(true)
+    // A launch field owns the footer exactly as a settings field does, so its
+    // value is applied rather than sent to Root chat.
+    expect(isTextInputActive("launch", false)).toBe(true)
+    expect(isTextInputActive("dashboard", false)).toBe(false)
+  })
+
+  test("offers a new assessment from Mission and says what starting one costs", async () => {
+    const snapshot = await completedSnapshot()
+    expect(plainText(formatMission(snapshot, undefined, 70))).toContain("[n] NEW ASSESSMENT")
+    const form = plainText(formatLaunch(
+      createLaunchState({ ...defaultScanInput, target: "https://example.com" }),
+      70,
+      "Starting this assessment cancels the engagement running here.",
+    ))
+    expect(form).toContain("NEW ASSESSMENT")
+    expect(form).toContain("cancels the engagement running here")
+    // Authorization is still a field the operator fills in, not one inherited
+    // from the engagement they started this from.
+    expect(form).toContain("Authorized by")
+    expect(form).toContain("not set")
+    expect(form).toContain("[s] start")
   })
 
   test("shows the configured runtime and provider without exposing credentials", async () => {
@@ -210,15 +234,16 @@ describe("product terminal state", () => {
     expect(detail).toContain("[r] ")
   })
 
-  test("renders the swarm tree with role states and worker counts", async () => {
+  test("renders the delegation tree with roles, activity and counts", async () => {
     const snapshot = await completedSnapshot()
     const swarm = plainText(formatSwarm(snapshot, "T-004", 30))
     expect(swarm).toMatch(/root-agent\s+COMPLETE/)
-    expect(swarm).toContain("recon-01")
-    expect(swarm).toContain("validator-01")
-    expect(swarm).toContain("COMPLETE")
+    // Nodes are named by the role they carry: what a specialist is *for* is
+    // what tells an `idor` branch from an `xss` one at a glance.
+    expect(swarm).toContain("recon")
+    expect(swarm).toContain("validator")
     expect(swarm).toContain("└─")
-    expect(swarm).toMatch(/\d+ active {2}\/ {2}\d+ workers/)
+    expect(swarm).toMatch(/\d+ active {2}\/ {2}\d+ agents?/)
   })
 
   test("reports mission activity in plain operator language, never raw payloads", async () => {

@@ -19,7 +19,15 @@ const bom = await createCycloneDxBom(projectRoot)
 assertCycloneDxBom(bom)
 await writeFile(join(outputDirectory, sbomName), `${JSON.stringify(bom, null, 2)}\n`, { mode: 0o644 })
 
-const artifactNames = [tarball, sbomName].sort()
+// The worker image record travels with the release: an operator comparing their
+// numbers with the published ones can see which image produced them.
+const workerManifestName = "worker-manifest.json"
+await Bun.write(
+  join(outputDirectory, workerManifestName),
+  await Bun.file(join(projectRoot, "containers", workerManifestName)).text(),
+)
+
+const artifactNames = [tarball, sbomName, workerManifestName].sort()
 const checksums = await Promise.all(artifactNames.map(async (name) => {
   const bytes = new Uint8Array(await Bun.file(join(outputDirectory, name)).arrayBuffer())
   return `${createHash("sha256").update(bytes).digest("hex")}  ${name}`

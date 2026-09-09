@@ -111,7 +111,9 @@ export class CyrionMcpServer {
       tools.push({
         name: "start_engagement",
         description:
-          "Start the configured engagement. Requires an operator attestation, which is recorded in the report.",
+          "Start the engagement this server was configured with. The caller cannot choose the target: scope and "
+          + "capabilities come from the operator's manifest. The attestation must repeat the one in the operator's "
+          + "scope lock, so authorization stays a record rather than something a caller can assert.",
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -177,8 +179,16 @@ export class CyrionMcpServer {
           isError: true,
         })
       }
-      const started = await start({ attestation })
-      return result(id, jsonContent(started))
+      try {
+        return result(id, jsonContent(await start({ attestation })))
+      } catch (error) {
+        // A refused start is a tool outcome the caller can read and act on, not
+        // a broken conversation: the server keeps serving the record either way.
+        return result(id, {
+          ...textContent(error instanceof Error ? error.message : String(error)),
+          isError: true,
+        })
+      }
     }
 
     const snapshot = this.#options.snapshot()

@@ -10,6 +10,15 @@ export const VERSION_FLAGS = ["--version", "-version", "-V", "-v"] as const
 export interface LocalRunnerOptions {
   /** Binaries this runner may execute. A capability adapter cannot widen it. */
   allowedBinaries: readonly string[]
+  /**
+   * Lifts the allowlist, for an engagement that granted `shell.exec`.
+   *
+   * A free-form shell has no fixed binary by definition, so the allowlist stops
+   * being the boundary and the sandbox becomes it. In a container that is the
+   * image plus the egress rules; here it is the operator's own machine and
+   * their own account, which is exactly why container is the default.
+   */
+  allowAnyBinary?: boolean
   workRoot?: string
 }
 
@@ -28,11 +37,13 @@ export interface LocalRunnerOptions {
 export class LocalToolRunner implements ToolRunner {
   readonly kind: SandboxKind = "local"
   readonly #allowed: ReadonlySet<string>
+  readonly #allowAny: boolean
   readonly #workRoot: string
   readonly #cache = new Map<string, BinaryInfo | undefined>()
 
   constructor(options: LocalRunnerOptions) {
     this.#allowed = new Set(options.allowedBinaries)
+    this.#allowAny = options.allowAnyBinary === true
     this.#workRoot = options.workRoot ?? tmpdir()
   }
 
@@ -46,7 +57,9 @@ export class LocalToolRunner implements ToolRunner {
   async run(spec: CommandSpec, signal?: AbortSignal): Promise<CommandResult> {
     const [binary, ...rest] = spec.argv
     if (!binary) throw new Error("A command needs a binary")
-    if (!this.#allowed.has(binary)) throw new Error(`Binary is not allowed in this engagement: ${binary}`)
+    if (!this.#allowAny && !this.#allowed.has(binary)) {
+      throw new Error(`Binary is not allowed in this engagement: ${binary}`)
+    }
     const info = await this.lookup(binary)
     if (!info) throw new Error(`${binary} is not installed on this machine. Run \`cyrion tools\` for install guidance.`)
 
@@ -60,6 +73,7 @@ export class LocalToolRunner implements ToolRunner {
         maxOutputBytes: spec.maxOutputBytes,
         runner: this.kind,
         ...(signal ? { signal } : {}),
+        ...(spec.onOutput ? { onOutput: spec.onOutput } : {}),
       })
     } finally {
       await rm(workDirectory, { recursive: true, force: true })

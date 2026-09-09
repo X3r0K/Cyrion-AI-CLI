@@ -15,6 +15,9 @@
       "@cyrion/assessment": [
         "packages/assessment/src/index.ts"
       ],
+      "@cyrion/benchmark": [
+        "packages/benchmark/src/index.ts"
+      ],
       "@cyrion/capabilities": [
         "packages/capabilities/src/index.ts"
       ],
@@ -27,11 +30,20 @@
       "@cyrion/evidence": [
         "packages/evidence/src/index.ts"
       ],
+      "@cyrion/knowledge": [
+        "packages/knowledge/src/index.ts"
+      ],
       "@cyrion/llm": [
         "packages/llm/src/index.ts"
       ],
+      "@cyrion/mcp": [
+        "packages/mcp/src/index.ts"
+      ],
       "@cyrion/reporting": [
         "packages/reporting/src/index.ts"
+      ],
+      "@cyrion/runtime-opencode": [
+        "packages/runtime-opencode/src/index.ts"
       ],
       "@cyrion/sandbox": [
         "packages/sandbox/src/index.ts"
@@ -41,12 +53,6 @@
       ],
       "@cyrion/skills": [
         "packages/skills/src/index.ts"
-      ],
-      "@cyrion/runtime-opencode": [
-        "packages/runtime-opencode/src/index.ts"
-      ],
-      "@cyrion/mcp": [
-        "packages/mcp/src/index.ts"
       ]
     }
   },

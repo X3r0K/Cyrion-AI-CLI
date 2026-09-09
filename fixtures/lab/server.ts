@@ -67,6 +67,54 @@ export function startLab(port = 0): Lab {
   }
 }
 
+export interface LinkedLab {
+  port: number
+  /** Every path the lab was asked for, so a test can prove what was not fetched. */
+  requested: string[]
+  stop(): void
+}
+
+/**
+ * A small site that links to itself, for the crawl.
+ *
+ * `/app/` is a section an operator can approve on its own, and `/admin` is one
+ * they did not: the page links to both, so a test can show that the crawl
+ * follows what is in scope and only counts what is not.
+ */
+export function startLinkedLab(port = 0): LinkedLab {
+  const requested: string[] = []
+  const page = (body: string): Response =>
+    new Response(`<html><body>${body}</body></html>`, { headers: { "content-type": "text/html" } })
+
+  const server = Bun.serve({
+    port,
+    fetch(request) {
+      const path = new URL(request.url).pathname
+      requested.push(path)
+      if (path === "/app/" || path === "/app") {
+        return page(
+          '<a href="/app/one">one</a>'
+          + "<a href='/app/two'>two</a>"
+          + '<a href="/admin">admin</a>'
+          + '<a href="https://elsewhere.test/">elsewhere</a>'
+          + '<a href="mailto:someone@example.test">mail</a>'
+          + '<a href="#section">anchor</a>',
+        )
+      }
+      if (path === "/app/one") return page('<a href="/app/three">three</a><a href="/app/">back</a>')
+      if (path === "/app/two") return Response.json({ id: 2 })
+      if (path === "/app/three") return page("leaf")
+      if (path === "/admin") return page("secrets")
+      return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } })
+    },
+  })
+  return {
+    port: server.port ?? port,
+    requested,
+    stop: () => server.stop(true),
+  }
+}
+
 if (import.meta.main) {
   const lab = startLab(Number(Bun.env.CYRION_LAB_PORT ?? 8123))
   console.error(`cyrion lab listening on ${lab.port}`)

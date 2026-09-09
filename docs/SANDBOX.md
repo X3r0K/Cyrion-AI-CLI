@@ -72,6 +72,27 @@ clean list and you can go straight to work.
 
 ## Container mode — isolation by construction
 
+The dedicated bridge is created on first use, and a container left behind by a
+run that died is removed before a new one starts, so neither is something you
+have to set up by hand.
+
+**Every capability leaves from inside the container.** `http.probe` is
+implemented in the Cyrion process for local mode — that is what makes it work on
+a machine with nothing installed — and falls back to `curl` inside the sandbox
+when the runner is a container. Otherwise the egress allowlist installed into
+that namespace would govern nothing that matters, since the capability an
+engagement uses most would never enter it. Pinned addresses reach curl as one
+`--resolve` entry so it can fall back across address families, with IPv6
+bracketed.
+
+**A container's loopback is its own.** A lab on this machine's `127.0.0.1` is
+not there at all, and Cyrion says so before the run starts rather than letting
+you meet it as a connection refused halfway through. Use `--sandbox local` for a
+target on this machine, or put the target on the `cyrion-sandbox` network.
+
+Repository targets are read from this machine's filesystem, which a container
+with no host mounts cannot see; use local mode for those.
+
 One long-lived container per engagement, executed into per capability:
 
 | Control | Setting |
@@ -105,18 +126,61 @@ exactly what is missing. Accept the risk explicitly if you must.
 
 ## The worker image
 
-`containers/Dockerfile.worker` builds from `kalilinux/kali-rolling` with the
-tools the capability catalog names, an unprivileged `pentester` user, and no
+`containers/Dockerfile.worker` builds from `vxcontrol/kali-linux` with the tools
+the capability catalog names, an unprivileged uid 1000 owning `/work`, and no
 build tooling left behind. `containers/build-worker.sh` builds it, refuses to
 finish unless every required binary answers inside the image, and writes
 `containers/worker-manifest.json` with the versions — those versions become part
 of an engagement's evidence, so they are recorded from the image rather than
 assumed.
 
+The shell is checked by running `sh -c`, not by asking its version: `sh -V` and
+`sh -v` are valid flags that print nothing, so a version probe reports a working
+shell as missing. Running one is also the check that matches what the image is
+for, since `shell.exec` runs `sh -c`.
+
 ```sh
+./containers/build-worker.sh
 CYRION_WORKER_IMAGE=cyrion/kali-worker:0.1 ./containers/build-worker.sh
 cyrion probe --capability net.portscan --target 10.10.0.0/24 --sandbox container
 ```
+
+The base is a variable. Point it at your own mirror, a hardened build, or a
+different Kali distribution — the verification applies whatever it is, so a base
+missing something fails the build rather than producing a worker that cannot do
+what the catalog promises. The manifest records which base produced the image,
+because two images sharing a tag but not a base are not the same evidence.
+
+```sh
+CYRION_WORKER_BASE=kalilinux/kali-rolling:latest ./containers/build-worker.sh
+```
+
+### Which image actually ran
+
+A tag is a name someone can move; the identity underneath it is not. The build
+script records both — the image ID and, when the image came from a registry, its
+digest — and Cyrion reads the identity of the image it is about to use:
+
+```sh
+cyrion tools --sandbox container
+#   sandbox      CONTAINER  READY
+#                docker 29.4.0. Worker image cyrion/kali-worker@sha256:50a07537…
+```
+
+- **No image** is refused before the engagement starts, with the command that
+  fixes it. It used to be an engine error at the first request, after the
+  operator had already authorized the run.
+- **A different image** is reported, not refused: two correct builds of the same
+  Dockerfile differ, so a rebuild is normal. What is not normal is measuring one
+  image and comparing the numbers with another's, so Cyrion says which one it
+  found and which one the release recorded.
+- **A pinned image** — `"pinned": true` in the manifest, set when an image is
+  published so everyone pulls the same bytes — is a requirement, and anything
+  else is refused. `--image` says plainly that you meant a different one, and is
+  never second-guessed.
+
+The image identity is recorded in the report beside the tool versions, because
+`nmap 7.99` from one image is not the same claim as `nmap 7.99` from another.
 
 ## Evidence
 

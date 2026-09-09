@@ -9,8 +9,11 @@ import type {
   ToolInvocation,
 } from "@cyrion/contracts"
 
+/** At most one progress note per interval, per tool call. */
+const PROGRESS_INTERVAL_MS = 1_000
+
 export type ToolEventSink = (
-  type: "tool.request.accepted" | "tool.request.completed" | "tool.request.rejected",
+  type: "tool.request.accepted" | "tool.request.completed" | "tool.request.rejected" | "tool.request.progress",
   payload: unknown,
   agentId: string,
   taskId: string,
@@ -21,6 +24,21 @@ interface Binding {
   agentId: string
   task: TaskSpec
   emit: ToolEventSink
+}
+
+/**
+ * The adapter's one-line account of what came back.
+ *
+ * Target-derived text, so it is capped and stripped of anything that could
+ * drive a terminal or corrupt a log line. Anything longer or stranger than a
+ * short phrase is dropped rather than truncated into something misleading.
+ */
+export function outcomeOf(output: unknown): string | undefined {
+  if (!output || typeof output !== "object") return undefined
+  const value = (output as { outcome?: unknown }).outcome
+  if (typeof value !== "string") return undefined
+  const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim()
+  return clean ? clean.slice(0, 200) : undefined
 }
 
 export class ScopedToolGateway {
@@ -69,8 +87,24 @@ export class ScopedToolGateway {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(new Error("Tool request timed out")), request.timeoutMs)
     try {
+      // Progress is throttled and bounded here rather than at the adapter, so a
+      // chatty tool cannot flood the durable log however it is written.
+      let lastNote = 0
+      const progress = (note: string): void => {
+        const now = Date.now()
+        if (now - lastNote < PROGRESS_INTERVAL_MS) return
+        const clean = note.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim().slice(0, 200)
+        if (!clean) return
+        lastNote = now
+        binding.emit(
+          "tool.request.progress",
+          { capability: request.capability, target: request.target, note: clean },
+          binding.agentId,
+          binding.task.id,
+        )
+      }
       const output = await Promise.race([
-        adapter.execute(request, controller.signal),
+        adapter.execute(request, controller.signal, progress),
         new Promise<never>((_, reject) => {
           controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true })
         }),
@@ -84,7 +118,16 @@ export class ScopedToolGateway {
       }
       binding.emit(
         "tool.request.completed",
-        { capability: request.capability, target: request.target, durationMs: result.durationMs, outputBytes },
+        {
+          capability: request.capability,
+          target: request.target,
+          durationMs: result.durationMs,
+          outputBytes,
+          // What the target actually returned, so the live transcript can show
+          // the exchange. It is derived from a response, so it is bounded and
+          // stripped here before it reaches a durable event.
+          ...(outcomeOf(output) ? { outcome: outcomeOf(output) } : {}),
+        },
         binding.agentId,
         binding.task.id,
       )

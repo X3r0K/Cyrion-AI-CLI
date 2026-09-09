@@ -22,6 +22,7 @@ import {
   type LaunchField,
   type LaunchState,
 } from "./launch-ui"
+import { filterFindings } from "./navigation"
 import {
   llmEndpointConfigured,
   selectedSettingsField,
@@ -32,8 +33,10 @@ import {
   type SettingsField,
 } from "./settings-ui"
 import { theme } from "./theme"
+import { activeCount, delegationTree, treeDepth, treePrefix } from "./delegation"
+import type { AttackKind, StreamWindow } from "./attack-stream"
 
-export type ViewName = "MISSION" | "SWARM" | "FINDINGS" | "EVIDENCE" | "SETTINGS"
+export type ViewName = "MISSION" | "ATTACK" | "SWARM" | "FINDINGS" | "EVIDENCE" | "SETTINGS"
 
 export interface RuntimeDisplay {
   mode: "fixture" | "hybrid" | "live"
@@ -64,10 +67,90 @@ export type EvidenceVerification = "idle" | "loading" | "verified" | "failed"
 const SIDE_WIDTH = 30
 const MAIN_WIDTH = 62
 
+/**
+ * The engagement as it happens to the target.
+ *
+ * One line per exchange: who asked, what capability, against which address, and
+ * what came back. A reader watching a live run should be able to answer "what
+ * did you just do to my site" without opening an artifact.
+ */
+export function formatAttack(
+  snapshot: EngagementSnapshot,
+  view: StreamWindow,
+  width = MAIN_WIDTH,
+): StyledText {
+  const chunks: TextChunk[] = []
+  appendPanelTitle(
+    chunks,
+    "LIVE ACTIVITY",
+    width,
+    view.following ? "FOLLOWING" : `${view.offset + 1}–${view.offset + view.lines.length} OF ${view.total}`,
+  )
+  if (!view.total) {
+    appendLine(chunks, [dim("Nothing has happened yet. Activity appears here as the swarm works.")], false)
+    return new StyledText(chunks)
+  }
+
+  const base = startedMs(snapshot)
+  for (const line of view.lines) {
+    const stamp = clock(Math.max(0, Math.floor((Date.parse(line.timestamp) - base) / 1000)))
+    const marker = attackMarker(line.kind)
+    const actor = pad(clip(line.actor, 13), 13)
+    // The verb and its object are the sentence; everything else is trimming.
+    const head = `${line.action}${line.subject ? ` ${line.subject}` : ""}`
+    const timing = line.durationMs === undefined ? "" : `  ${line.durationMs}ms`
+    const room = Math.max(16, width - stamp.length - actor.length - timing.length - 8)
+    appendLine(chunks, [
+      dim(`${stamp} `),
+      marker,
+      fg(theme.muted)(`${actor} `),
+      plain(clip(head, room)),
+      dim(timing),
+    ])
+    if (line.detail) {
+      const indent = stamp.length + 3 + actor.length
+      const detail = clip(line.detail, Math.max(20, width - indent - 2))
+      appendLine(chunks, [plain(" ".repeat(Math.min(indent, Math.max(0, width - 4)))), attackDetail(line.kind)(detail)])
+    }
+  }
+  appendLine(chunks, [])
+  appendLine(chunks, [
+    view.following ? success("■ FOLLOWING") : warning("◇ SCROLLED BACK"),
+    dim("   [↑↓] scroll   [PgUp/PgDn] page   [end] follow   [f] toggle follow"),
+  ], false)
+  return new StyledText(chunks)
+}
+
+function attackMarker(kind: AttackKind): TextChunk {
+  if (kind === "request") return fg(theme.accent)("→ ")
+  if (kind === "progress") return fg(theme.muted)("· ")
+  if (kind === "answer") return fg(theme.accentBright)("← ")
+  if (kind === "refusal") return fg(theme.danger)("✗ ")
+  if (kind === "finding") return fg(theme.warning)("! ")
+  if (kind === "decision") return fg(theme.accentDark)("◆ ")
+  if (kind === "task") return fg(theme.muted)("· ")
+  return fg(theme.borderMuted)("─ ")
+}
+
+function attackDetail(kind: AttackKind): (value: string) => TextChunk {
+  if (kind === "refusal") return (value) => fg(theme.danger)(value)
+  if (kind === "finding") return (value) => fg(theme.warning)(value)
+  if (kind === "answer") return (value) => fg(theme.text)(value)
+  return (value) => fg(theme.muted)(value)
+}
+
+/**
+ * The delegation tree: who asked for whom, and what each one is doing.
+ *
+ * A run is a graph now — root delegates, a worker asks for a specialist, and
+ * that specialist can ask for another — so a flat roster would hide the only
+ * thing worth knowing about the seventh agent, which is why it exists. Each
+ * node draws its own elbow from the spine, so a branch under a finished sibling
+ * does not trail a rule through empty space.
+ */
 export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: string, width = SIDE_WIDTH): StyledText {
   const root = snapshot.agents.find((agent) => agent.role === "root")
-  const workers = snapshot.agents.filter((agent) => agent.role !== "root")
-  const selectedAgentId = snapshot.tasks.find((task) => task.id === selectedTaskId)?.agentId
+  const nodes = delegationTree(snapshot)
   const chunks: TextChunk[] = []
 
   const rootName = root?.name ?? "root-agent"
@@ -78,24 +161,43 @@ export function formatSwarm(snapshot: EngagementSnapshot, selectedTaskId?: strin
     accent(rootState),
   ])
   appendRule(chunks, width)
-  appendLine(chunks, [statusGlyph(root?.status ?? "queued", "root"), plain(`  ${root?.name ?? "root-agent"}`)])
-  appendLine(chunks, [dim("   "), status(root?.status ?? "queued", "root")])
+  appendLine(chunks, [statusGlyph(root?.status ?? "queued", "root"), plain(`  ${rootName}`)])
 
-  for (const [index, worker] of workers.entries()) {
-    const last = index === workers.length - 1
-    const selected = worker.id === selectedAgentId
-    const name = clip(worker.name, Math.max(8, width - 6))
+  for (const node of nodes) {
+    const prefix = treePrefix(node)
+    const selected = node.taskId === selectedTaskId
+    // The role is what a specialist is *for*, and it is the reason a reader can
+    // tell an `idor` branch from an `xss` one at a glance.
+    const name = clip(node.role, Math.max(6, width - prefix.length - 4))
     appendLine(chunks, [
-      dim(last ? "└─ " : "├─ "),
-      statusGlyph(worker.status, worker.role),
+      dim(prefix),
+      statusGlyph(node.agentStatus, node.role as AgentRole),
       selected ? bg(theme.selection)(accent(` ${name}`)) : plain(` ${name}`),
     ])
-    appendLine(chunks, [dim(last ? "    " : "│   "), status(worker.status, worker.role)])
+    // The activity line sits under the node, indented past its own elbow, so a
+    // long tool call never pushes the tree sideways.
+    const indent = `${node.spine.map((continues) => (continues ? "│  " : "   ")).join("")}${node.last ? "   " : "│  "}`
+    appendLine(chunks, [
+      dim(indent),
+      fg(node.status === "running" ? theme.accent : theme.dim)(
+        clip(node.activity, Math.max(6, width - indent.length - 1)),
+      ),
+    ])
   }
 
-  const active = snapshot.agents.filter((agent) => agent.status === "running").length
   appendRule(chunks, width)
-  appendLine(chunks, [accent(`${active} active`), dim(`  /  ${workers.length} workers`)], false)
+  const deepest = treeDepth(nodes)
+  const active = `${activeCount(nodes)} active`
+  const total = `  /  ${nodes.length} agent${nodes.length === 1 ? "" : "s"}`
+  const depthLabel = deepest > 1 ? `  /  depth ${deepest}` : ""
+  // The depth is the least important of the three, so it is what gives way
+  // rather than letting the footer run past its own border.
+  const fits = active.length + total.length + depthLabel.length <= width
+  appendLine(chunks, [
+    accent(active),
+    dim(total),
+    dim(fits ? depthLabel : ""),
+  ], false)
   return new StyledText(chunks)
 }
 
@@ -106,7 +208,7 @@ export function formatMission(
 ): StyledText {
   const chunks: TextChunk[] = []
   appendPanelTitle(chunks, "MISSION CONTROL", width, snapshot.status.toUpperCase())
-  appendLine(chunks, [accent("[ ROOT AGENT / BRIEFING ]")])
+  appendLine(chunks, [accent("[ ROOT AGENT / BRIEFING ]"), dim("   [n] NEW ASSESSMENT")])
   appendLine(chunks, [])
   if (runtime) appendLine(chunks, [dim("runtime   >  "), plain(runtimeLabel(runtime))])
   appendLine(chunks, [dim("operator  >  "), plain(snapshot.manifest.objective)])
@@ -262,17 +364,35 @@ export function formatFindings(
   snapshot: EngagementSnapshot,
   selectedFindingId?: string,
   width = MAIN_WIDTH,
+  filter = "",
 ): StyledText {
   const chunks: TextChunk[] = []
-  appendPanelTitle(chunks, "FINDINGS", width, `${snapshot.findings.length} TOTAL`)
+  const shown = filterFindings(snapshot.findings, filter)
+  appendPanelTitle(
+    chunks,
+    "FINDINGS",
+    width,
+    filter ? `${shown.length} OF ${snapshot.findings.length}` : `${snapshot.findings.length} TOTAL`,
+  )
   appendLine(chunks, [dim(countFindings(snapshot.findings))])
+  if (filter) {
+    appendLine(chunks, [
+      accent("/ "),
+      plain(sanitizeTerminalText(filter, 60)),
+      dim("   [esc] clear"),
+    ])
+  }
   appendLine(chunks, [])
   if (!snapshot.findings.length) {
     appendLine(chunks, [dim("No candidates have been submitted.")], false)
     return new StyledText(chunks)
   }
+  if (!shown.length) {
+    appendLine(chunks, [dim(`Nothing matches "${sanitizeTerminalText(filter, 40)}". Press esc to clear.`)], false)
+    return new StyledText(chunks)
+  }
   const cardWidth = Math.max(30, Math.min(width, 72))
-  for (const [index, finding] of snapshot.findings.entries()) {
+  for (const [index, finding] of shown.entries()) {
     const selected = finding.id === selectedFindingId || (!selectedFindingId && index === 0)
     const border = selected ? theme.accentBright : theme.borderMuted
     appendLine(chunks, [fg(border)(`┌${"─".repeat(cardWidth - 2)}┐`)])
@@ -434,7 +554,11 @@ export function formatEvidenceInspector(
 export function formatCommandHelp(width = SIDE_WIDTH): StyledText {
   const chunks: TextChunk[] = []
   appendPanelTitle(chunks, "COMMANDS", width)
-  appendLine(chunks, [accent(pad("1–5", 11)), plain("Mission / Swarm / Findings / Evidence / Settings")])
+  appendLine(chunks, [accent(pad("1–6", 11)), plain("Mission / Attack / Swarm / Findings / Evidence / Settings")])
+  appendLine(chunks, [accent(pad("n", 11)), plain("Start a new assessment (Mission view)")])
+  appendLine(chunks, [accent(pad("f", 11)), plain("Follow the live activity stream (Attack view)")])
+  appendLine(chunks, [accent(pad("/", 11)), plain("Filter findings; esc clears it")])
+  appendLine(chunks, [accent(pad("< >", 11)), plain("Fold the left or right pane away")])
   appendLine(chunks, [accent(pad("↑ ↓ / j k", 11)), plain("Move current selection")])
   appendLine(chunks, [accent(pad("← →", 11)), plain("Move views; adjust values in Settings")])
   appendLine(chunks, [accent(pad("[ / ]", 11)), plain("Move between views from any page")])
@@ -458,10 +582,15 @@ export function formatCommandHelp(width = SIDE_WIDTH): StyledText {
  * Authorization is a field like any other, because it is a decision the
  * operator makes rather than a formality the tool assumes.
  */
-export function formatLaunch(state: LaunchState, width = MAIN_WIDTH): StyledText {
+export function formatLaunch(state: LaunchState, width = MAIN_WIDTH, note?: string): StyledText {
   const chunks: TextChunk[] = []
   const readiness = launchReadiness(state)
   appendPanelTitle(chunks, "NEW ASSESSMENT", width, readiness.ready ? "READY" : "INCOMPLETE")
+  // Set when the form is opened over a run: what starting one does to it.
+  if (note) {
+    for (const line of wrap(note, width)) appendLine(chunks, [warning(line)])
+    appendLine(chunks, [])
+  }
 
   for (const [index, field] of launchFields.entries()) {
     const selected = index === state.selectedIndex
@@ -494,7 +623,7 @@ export function formatLaunch(state: LaunchState, width = MAIN_WIDTH): StyledText
   appendLine(chunks, [])
   appendLine(chunks, [
     readiness.ready ? success("■ READY") : warning("◇ INCOMPLETE"),
-    dim("   [↑↓] move   [←→] change   [space] toggle   [enter] edit   [s] start   [q] quit"),
+    dim("   [↑↓] move   [←→] change   [space] toggle   [enter] edit   [s] start   [esc] cancel"),
   ])
   if (!readiness.ready && readiness.reason) {
     for (const line of wrap(readiness.reason, width)) appendLine(chunks, [warning(line)])
@@ -507,7 +636,7 @@ function launchLabel(field: LaunchField): string {
   if (field === "target") return "Target"
   if (field === "sandbox") return "Sandbox"
   if (field === "mode") return "Mode"
-  if (field === "attestation") return "Authorized by"
+  if (field === "attestation") return "Authorized by (optional)"
   return "Capabilities"
 }
 
@@ -528,8 +657,8 @@ function launchHint(state: LaunchState): string {
   if (field === "mode") {
     return "AUTONOMOUS dispatches each validated transition. SUPERVISED waits for your approval before every one."
   }
-  return "Who authorized this assessment, and under what reference. It is bound to the scope and appears in the "
-    + "report, so write what an auditor would need to see."
+  return "Optional. Leave it empty and the scan starts anyway; fill it in and it is bound to the scope and "
+    + "appears in the report, for an engagement that needs the record."
 }
 
 export function formatSettings(

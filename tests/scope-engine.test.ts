@@ -225,8 +225,12 @@ describe("scope lock", () => {
     const widened = { ...manifest, scope: policy(["10.10.0.0/16"], []) }
     expect(verifyScopeLock(lock, widened)).toMatch(/does not match the current scope/)
     expect(verifyScopeLock(lock, { ...manifest, id: "ENG-OTHER" })).toMatch(/written for engagement/)
-    expect(verifyScopeLock({ ...lock, attestation: "x" }, manifest)).toMatch(/attestation is invalid/)
     expect(verifyScopeLock({ ...lock, version: "other" }, manifest)).toMatch(/unsupported lock version/)
-    expect(() => createScopeLock(manifest, "  ")).toThrow(/who authorized/)
+    // A lock is a record an operator chooses to keep, so it holds without an
+    // attestation — but an attestation that is present has to be a real one.
+    const bare = createScopeLock(manifest)
+    expect(bare.attestation).toBeUndefined()
+    expect(verifyScopeLock(bare, manifest)).toBeUndefined()
+    expect(verifyScopeLock({ ...lock, attestation: "  " }, manifest)).toMatch(/attestation is invalid/)
   })
 })

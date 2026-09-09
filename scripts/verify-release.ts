@@ -34,6 +34,20 @@ try {
   await stat(join(packageRoot, "workers/fixture-worker.ts"))
   await stat(join(packageRoot, ".env.example"))
 
+  // A release that ships container mode has to say which image it measured.
+  // Without the record, "the sandbox is ready" is a claim nobody can check.
+  const workerManifest = await Bun.file(join(packageRoot, "containers/worker-manifest.json")).json() as {
+    image?: string
+    id?: string
+    tools?: Record<string, string>
+  }
+  if (!workerManifest.image || !workerManifest.id?.startsWith("sha256:")) {
+    throw new Error("Packed worker manifest does not identify the image it was built from")
+  }
+  if (!workerManifest.tools || !Object.keys(workerManifest.tools).length) {
+    throw new Error("Packed worker manifest records no tool versions")
+  }
+
   const packageMetadata = await Bun.file(join(packageRoot, "package.json")).json() as { name?: string; version?: string }
   if (!packageMetadata.name || !packageMetadata.version) throw new Error("Packed package identity is missing")
   const consumer = join(sandbox, "consumer")

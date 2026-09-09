@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { EngagementSnapshot } from "@cyrion/contracts"
@@ -13,7 +13,11 @@ import {
   mcpConfigError,
   ungrantedCapabilities,
   type McpConfig,
+  type McpServerConfig,
 } from "@cyrion/mcp"
+import { McpCapabilities, unservedCapabilities } from "@cyrion/capabilities"
+import type { EvidenceRef, EvidenceStore, ScopePolicy } from "@cyrion/contracts"
+import { createScopeLock } from "@cyrion/scope"
 
 const projectRoot = join(import.meta.dir, "..")
 const cli = join(projectRoot, "apps/cli/src/index.ts")
@@ -267,4 +271,325 @@ describe("a second agent driving Cyrion over stdio", () => {
       await rm(directory, { recursive: true, force: true })
     }
   }, 120_000)
+})
+
+const notesServer = join(projectRoot, "fixtures/mcp/notes-server.ts")
+
+/** The fixture server, declared the way an operator would declare a real one. */
+function notesConfig(overrides: Partial<McpServerConfig> = {}): McpConfig {
+  return {
+    version: MCP_CONFIG_VERSION,
+    servers: [{
+      id: "notes",
+      command: "bun",
+      args: ["run", notesServer],
+      cwd: projectRoot,
+      startTimeoutMs: 60_000,
+      tools: [
+        { tool: "lookup_note", capability: "notes.lookup", timeoutMs: 30_000 },
+        { tool: "broken_note", capability: "notes.broken", timeoutMs: 30_000 },
+        { tool: "long_note", capability: "notes.long", timeoutMs: 30_000, maxOutputBytes: 512 },
+      ],
+      ...overrides,
+    }],
+  }
+}
+
+const notesScope: ScopePolicy = {
+  targets: ["https://app.lab.test/"],
+  excluded: [],
+  capabilities: ["notes.lookup", "notes.broken", "notes.long"],
+}
+
+describe("an MCP tool as a capability a worker calls", () => {
+  async function callThrough(capability: string, target = "https://app.lab.test/", input: unknown = {}) {
+    const host = new McpCapabilities({ config: notesConfig(), granted: notesScope.capabilities })
+    const store = new MemoryEvidenceStore()
+    // A recording store, so a call that fails can still be asked what it stored
+    // before it failed.
+    const captured: EvidenceRef[] = []
+    const evidenceStore: EvidenceStore = {
+      capture: async (input) => {
+        const reference = await store.capture(input)
+        captured.push(reference)
+        return reference
+      },
+      metadata: (reference) => store.metadata(reference),
+      read: (reference) => store.read(reference),
+      verify: (reference) => store.verify(reference),
+    }
+    const adapter = host.adapters().find((entry) => entry.capability === capability)!
+    let sequence = 0
+    const context = {
+      runner: undefined as never,
+      scope: notesScope,
+      evidence: evidenceStore,
+      pins: new Map(),
+      nextEvidenceId: () => `E-${String(++sequence).padStart(4, "0")}`,
+    }
+    try {
+      const result = await adapter.execute({
+        engagementId: "ENG-MCP",
+        taskId: "T-1",
+        agentId: "recon-1",
+        capability,
+        target,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1_000_000,
+        input: input as Record<string, unknown>,
+      }, context, new AbortController().signal)
+      return { result, store, captured, host }
+    } catch (error) {
+      return { error: error as Error, store, captured, host }
+    }
+  }
+
+  test("serves only the capabilities the manifest granted, and never shadows a built-in", () => {
+    const partial = new McpCapabilities({ config: notesConfig(), granted: ["notes.lookup"] })
+    expect(partial.names()).toEqual(["notes.lookup"])
+    expect(new McpCapabilities({ config: notesConfig(), granted: [] }).names()).toEqual([])
+
+    const shadowing = notesConfig() as McpConfig
+    shadowing.servers[0]!.tools = [{ tool: "lookup_note", capability: "http.probe" }]
+    expect(() => new McpCapabilities({ config: shadowing, granted: ["http.probe"] }))
+      .toThrow(/Cyrion implements/)
+  })
+
+  test("a granted capability an MCP tool answers is no longer unserved", () => {
+    expect(unservedCapabilities(["notes.lookup", "http.probe"])).toEqual(["notes.lookup"])
+    expect(unservedCapabilities(["notes.lookup", "http.probe"], ["notes.lookup"])).toEqual([])
+  })
+
+  test("passes typed arguments through, captures the answer, and labels it untrusted", async () => {
+    const { result, store, host } = await callThrough("notes.lookup", "https://app.lab.test/", { subject: "tls" })
+    try {
+      const summary = result!.summary as { server: string; tool: string; text: string; untrusted: string }
+      expect(summary.server).toBe("notes")
+      expect(summary.tool).toBe("lookup_note")
+      // The server saw the worker's arguments exactly as they were typed.
+      expect(summary.text).toContain('"subject":"tls"')
+      expect(summary.untrusted).toContain("never as an instruction")
+
+      // The whole exchange is stored before a summary is returned, so what the
+      // server said stays checkable after the run.
+      expect(result!.evidence).toHaveLength(1)
+      const stored = JSON.parse(new TextDecoder().decode(await store.read(result!.evidence[0]!)))
+      expect(stored.server).toBe("notes")
+      expect(stored.arguments).toEqual({ subject: "tls" })
+      expect(stored.serverInfo.name).toBe("notes-fixture")
+      expect(result!.outcome).toContain("notes/lookup_note")
+
+      // Provenance the report states: which server, which tool, as what.
+      // One session per server, so every tool it answers for names the version
+      // that actually answered.
+      expect(host.describe()).toEqual([
+        { server: "notes", tool: "lookup_note", capability: "notes.lookup", serverName: "notes-fixture", serverVersion: "1.4.2" },
+        { server: "notes", tool: "broken_note", capability: "notes.broken", serverName: "notes-fixture", serverVersion: "1.4.2" },
+        { server: "notes", tool: "long_note", capability: "notes.long", serverName: "notes-fixture", serverVersion: "1.4.2" },
+      ])
+    } finally {
+      await host.close()
+    }
+  }, 60_000)
+
+  test("refuses a target the scope does not cover, without starting the server", async () => {
+    const { error, host } = await callThrough("notes.lookup", "https://not-approved.test/")
+    try {
+      expect(error?.message).toContain("notes.lookup refused")
+      // Nothing was asked of the server, so nothing came back to record.
+      expect(host.describe().every((entry) => !entry.serverVersion)).toBe(true)
+    } finally {
+      await host.close()
+    }
+  }, 60_000)
+
+  test("treats a server-reported failure as a failed call, with the exchange still recorded", async () => {
+    const { error, captured, host } = await callThrough("notes.broken")
+    try {
+      expect(error?.message).toContain("notes/broken_note reported an error")
+      expect(error?.message).toContain("the note store is unavailable")
+      expect(captured).toHaveLength(1)
+    } finally {
+      await host.close()
+    }
+  }, 60_000)
+
+  test("holds the answer to the byte ceiling the operator declared", async () => {
+    const { result, host } = await callThrough("notes.long")
+    try {
+      const summary = result!.summary as { text: string; truncated: boolean }
+      expect(summary.truncated).toBe(true)
+      expect(summary.text.length).toBe(512)
+    } finally {
+      await host.close()
+    }
+  }, 60_000)
+})
+
+describe("starting an engagement over MCP", () => {
+  test("runs the engagement the operator prepared, and only for a caller who repeats the attestation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cyrion-mcp-start-"))
+    try {
+      // A repository target: local, read-only, and quick enough for a test.
+      const repository = join(directory, "repo")
+      await mkdir(repository)
+      await writeFile(join(repository, "package.json"), JSON.stringify({ name: "fixture" }))
+      await writeFile(join(repository, "index.ts"), "export const a = 1\n")
+
+      const manifest = {
+        id: "ENG-MCP-START",
+        name: "Started over MCP",
+        objective: "Inventory an approved repository, started by another agent.",
+        profile: "repository" as const,
+        mode: "autonomous" as const,
+        scope: { targets: [`repo:${repository}`], excluded: [], capabilities: ["repo.inventory"] },
+        budgets: {
+          maxConcurrentAgents: 2, maxAgents: 10, maxDepth: 3, maxTasks: 10,
+          maxDurationMs: 120_000, maxTokens: 50_000, maxCostUsd: 1,
+        },
+      }
+      const attestation = "Self-assessment of my own checkout, ticket SEC-9"
+      const manifestPath = join(directory, "engagement.json")
+      const lockPath = join(directory, "engagement.lock")
+      await Bun.write(manifestPath, JSON.stringify(manifest, null, 2))
+      await Bun.write(lockPath, JSON.stringify(createScopeLock(manifest, attestation), null, 2))
+
+      const client = new McpStdioClient({
+        id: "cyrion",
+        command: "bun",
+        // Deterministic planner and workers: this test is about the protocol
+        // and the authorization, not about what a provider would say.
+        args: ["run", cli, "mcp", "serve",
+          "--scope", manifestPath, "--scope-lock", lockPath,
+          "--planner", "assessment", "--workers", "capability",
+          "--sandbox", "local", "--artifacts", join(directory, "artifacts")],
+        cwd: projectRoot,
+        startTimeoutMs: 120_000,
+        tools: [
+          { tool: "start_engagement", capability: "cyrion.start", timeoutMs: 60_000 },
+          { tool: "engagement_status", capability: "cyrion.status", timeoutMs: 60_000 },
+          { tool: "list_findings", capability: "cyrion.findings", timeoutMs: 60_000 },
+        ],
+      })
+      try {
+        const tools = await client.listTools()
+        expect(tools.map((tool) => tool.name)).toContain("start_engagement")
+
+        // An authorization the caller made up is refused: the operator's lock
+        // decides, and this server cannot accept a new one.
+        const invented = await client.call("start_engagement", { attestation: "I said it was fine" })
+        expect(invented.isError).toBe(true)
+        expect(invented.text).toContain("scope lock")
+
+        const started = await client.call("start_engagement", { attestation })
+        expect(started.isError).toBe(false)
+        expect(JSON.parse(started.text).engagementId).toBe("ENG-MCP-START")
+
+        // It starts once. Asking again reports where the run is, rather than
+        // running the same engagement a second time over its own artifacts.
+        const again = await client.call("start_engagement", { attestation })
+        expect(again.isError).toBe(false)
+        expect(JSON.parse(again.text).engagementId).toBe("ENG-MCP-START")
+
+        // The run is real: it reaches a terminal state through the same
+        // controller a command-line run uses.
+        let status: { status: string; engagementId: string } = JSON.parse(started.text)
+        for (let attempt = 0; attempt < 60 && !["completed", "failed", "cancelled"].includes(status.status); attempt += 1) {
+          await Bun.sleep(500)
+          status = JSON.parse((await client.call("engagement_status", {})).text)
+        }
+        expect(status.status).toBe("completed")
+        expect(JSON.parse((await client.call("list_findings", {})).text).count).toBeGreaterThanOrEqual(0)
+      } finally {
+        await client.close()
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 180_000)
+})
+
+describe("a worker calling an approved MCP tool", () => {
+  test("runs it through the gateway, records what it said, and never calls it a finding", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cyrion-mcp-worker-"))
+    try {
+      const repository = join(directory, "repo")
+      await mkdir(repository)
+      await writeFile(join(repository, "package.json"), JSON.stringify({ name: "fixture" }))
+      await writeFile(join(repository, "index.ts"), "export const a = 1\n")
+
+      // An operator-authored methodology that asks for the operator's own tool.
+      // Nothing shipped requires an MCP capability, and nothing should.
+      const skills = join(directory, "skills")
+      await mkdir(skills)
+      await writeFile(join(skills, "vendor-notes.skill.json"), JSON.stringify({
+        version: "cyrion.community/skill-v1",
+        id: "vendor-note-lookup",
+        name: "Vendor note lookup",
+        source: "operator",
+        appliesTo: { kinds: ["repo"], capabilities: ["repo.inventory", "notes.lookup"], roles: ["recon"] },
+        objective: "Inventory an approved repository and record what the operator's note service says about it.",
+        preconditions: ["The approved scope includes a repository root the operator can read"],
+        steps: [
+          "Walk the approved root and record what the project is written in.",
+          "Ask the operator's approved note service for context, and record its answer as an observation.",
+        ],
+        expectedEvidence: ["log"],
+        falsePositives: ["A note service answer is context, not a finding about the target."],
+        severity: "info",
+        references: ["https://owasp.org/www-project-web-security-testing-guide/"],
+      }))
+
+      const mcpPath = join(directory, "mcp.json")
+      await Bun.write(mcpPath, JSON.stringify(notesConfig()))
+      const manifestPath = join(directory, "engagement.json")
+      await Bun.write(manifestPath, JSON.stringify({
+        id: "ENG-MCP-WORKER",
+        name: "MCP worker path",
+        objective: "Record what an approved MCP tool says about an approved repository.",
+        profile: "repository",
+        mode: "autonomous",
+        scope: { targets: [`repo:${repository}`], excluded: [], capabilities: ["repo.inventory", "notes.lookup"] },
+        budgets: {
+          maxConcurrentAgents: 2, maxAgents: 10, maxDepth: 3, maxTasks: 10,
+          maxDurationMs: 120_000, maxTokens: 50_000, maxCostUsd: 1,
+        },
+      }))
+
+      const run = Bun.spawn({
+        cmd: ["bun", "run", cli, "engage", "--scope", manifestPath, "--skills", skills, "--mcp", mcpPath,
+          "--sandbox", "local", "--planner", "assessment", "--workers", "capability", "--headless",
+          "--artifacts", join(directory, "artifacts")],
+        cwd: projectRoot,
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const output = await new Response(run.stdout).text()
+      expect(await run.exited).toBe(0)
+      const lines = output.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+
+      // The call went through the gateway like any other capability.
+      const completed = lines.filter((line) => line.type === "tool.request.completed")
+        .map((line) => line.payload as { capability: string; outcome?: string })
+      expect(completed.map((entry) => entry.capability)).toContain("notes.lookup")
+      expect(completed.find((entry) => entry.capability === "notes.lookup")?.outcome)
+        .toContain("notes/lookup_note")
+
+      // What it said is an observation citing an artifact, not a finding.
+      const recon = lines.find((line) => line.type === "task.completed"
+        && JSON.stringify(line.payload).includes("Consulted notes.lookup"))
+      const observations = ((recon?.payload as { result: { observations: Array<{ summary: string; evidenceIds: string[] }> } })
+        .result.observations)
+      const cited = observations.find((observation) => observation.summary.includes("Consulted notes.lookup"))!
+      expect(cited.summary).toContain("notes/lookup_note")
+      expect(cited.evidenceIds.length).toBeGreaterThan(0)
+
+      const summary = lines.at(-1) as unknown as { status: string; confirmed: number; evidence: number }
+      expect(summary.status).toBe("completed")
+      expect(summary.confirmed).toBe(0)
+      expect(summary.evidence).toBeGreaterThanOrEqual(2)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 180_000)
 })

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   LocalToolRunner,
   buildEgressRules,
@@ -11,6 +12,9 @@ import {
   requirementFor,
   scrubbedEnvironment,
   toolCatalog,
+  workerImageDrift,
+  workerImageError,
+  workerImageLabel,
 } from "@cyrion/sandbox"
 import { pinAddresses } from "@cyrion/scope"
 
@@ -122,9 +126,12 @@ describe("host tooling", () => {
   test("maps each capability to the package that provides it", () => {
     expect(requirementFor("net.portscan")?.binary).toBe("nmap")
     expect(requirementFor("http.probe")?.binary).toBe("")
-    const plan = installPlan([requirementFor("net.portscan")!, requirementFor("http.crawl")!], "apt")
+    // http.crawl and http.probe are implemented in Cyrion; dns.enum is a tool
+    // this package manager does not carry, so it is named as a manual step.
+    expect(requirementFor("http.crawl")?.binary).toBe("")
+    const plan = installPlan([requirementFor("net.portscan")!, requirementFor("dns.enum")!], "apt")
     expect(plan.command).toBe("sudo apt-get install -y nmap")
-    expect(plan.manual.map((tool) => tool.binary)).toEqual(["katana"])
+    expect(plan.manual.map((tool) => tool.binary)).toEqual(["dnsx"])
     expect(installPlan([requirementFor("net.portscan")!], "pacman").command).toBe("sudo pacman -S --needed nmap")
     expect(installPlan([], "apt").command).toBe("")
   })
@@ -143,5 +150,73 @@ describe("host tooling", () => {
     expect(host.distribution.length).toBeGreaterThan(0)
     expect(["apt", "dnf", "pacman", "zypper", "apk", "brew", "unknown"]).toContain(host.packageManager)
     expect(typeof host.root).toBe("boolean")
+  })
+})
+
+describe("the worker image a container run would use", () => {
+  const pin = {
+    image: "cyrion/kali-worker:0.1",
+    id: "sha256:aaaa",
+    repoDigest: "cyrion/kali-worker@sha256:aaaa",
+  }
+  const present = {
+    image: "cyrion/kali-worker:0.1",
+    present: true,
+    id: "sha256:aaaa",
+    repoDigest: "cyrion/kali-worker@sha256:aaaa",
+    detail: "ok",
+  }
+
+  test("a missing image is refused with the command that fixes it", () => {
+    const missing = { image: "cyrion/kali-worker:0.1", present: false, detail: "absent" }
+    const error = workerImageError(missing, pin)!
+    expect(error).toContain("not on this machine")
+    expect(error).toContain("./containers/build-worker.sh")
+    expect(error).toContain("--sandbox local")
+  })
+
+  test("the recorded image passes, and a different one is reported rather than refused", () => {
+    expect(workerImageError(present, pin)).toBeUndefined()
+    expect(workerImageDrift(present, pin)).toBeUndefined()
+
+    // Two correct builds of the same Dockerfile differ, so a rebuild is not an
+    // error — but the operator is told, because published numbers came from the
+    // recorded image and theirs did not.
+    const rebuilt = { ...present, id: "sha256:bbbb", repoDigest: "cyrion/kali-worker@sha256:bbbb" }
+    expect(workerImageError(rebuilt, pin)).toBeUndefined()
+    const drift = workerImageDrift(rebuilt, pin)!
+    expect(drift).toContain("sha256:bbbb")
+    expect(drift).toContain("recorded")
+  })
+
+  test("a published image can be pinned, and then a different one is refused", () => {
+    const rebuilt = { ...present, id: "sha256:bbbb", repoDigest: "cyrion/kali-worker@sha256:bbbb" }
+    const error = workerImageError(rebuilt, { ...pin, pinned: true })!
+    expect(error).toContain("pins that image")
+    expect(error).toContain("--image")
+    // Nothing to say twice: a refusal is not also a notice.
+    expect(workerImageDrift(rebuilt, { ...pin, pinned: true })).toBeUndefined()
+  })
+
+  test("an image the operator chose is compared against nothing", () => {
+    const other = { ...present, image: "my/own-worker:2", id: "sha256:cccc", repoDigest: "" }
+    expect(workerImageError(other, { ...pin, pinned: true })).toBeUndefined()
+    expect(workerImageDrift(other, pin)).toBeUndefined()
+    expect(workerImageLabel(other)).toBe("sha256:cccc")
+  })
+
+  test("the release records what it built", async () => {
+    const manifest = await Bun.file(join(import.meta.dir, "..", "containers", "worker-manifest.json")).json() as {
+      image: string
+      id: string
+      pinned: boolean
+      tools: Record<string, string>
+    }
+    expect(manifest.image).toBe("cyrion/kali-worker:0.1")
+    expect(manifest.id).toMatch(/^sha256:[a-f0-9]{64}$/)
+    // An image nobody can pull cannot be pinned, and says so rather than
+    // pretending the identity is a requirement.
+    expect(manifest.pinned).toBe(false)
+    expect(Object.keys(manifest.tools)).toContain("nmap")
   })
 })

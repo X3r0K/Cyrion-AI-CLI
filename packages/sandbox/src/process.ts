@@ -8,6 +8,12 @@ export interface SpawnOptions {
   maxOutputBytes: number
   runner: SandboxKind
   signal?: AbortSignal
+  /**
+   * Called with each chunk of stdout as it arrives. A scan of a /24 takes
+   * minutes, and an operator watching one deserves to see it working rather
+   * than a still screen.
+   */
+  onOutput?: (chunk: string) => void
 }
 
 /**
@@ -44,7 +50,7 @@ export async function spawnBounded(options: SpawnOptions): Promise<CommandResult
 
   try {
     const [stdout, stderr, exitCode] = await Promise.all([
-      readBounded(child.stdout, options.maxOutputBytes),
+      readBounded(child.stdout, options.maxOutputBytes, options.onOutput),
       readBounded(child.stderr, Math.min(options.maxOutputBytes, 64 * 1024)),
       child.exited,
     ])
@@ -67,8 +73,10 @@ export async function spawnBounded(options: SpawnOptions): Promise<CommandResult
 async function readBounded(
   stream: ReadableStream<Uint8Array>,
   limit: number,
+  onOutput?: (chunk: string) => void,
 ): Promise<{ text: string; truncated: boolean }> {
   const reader = stream.getReader()
+  const decoder = new TextDecoder()
   const chunks: Uint8Array[] = []
   let length = 0
   let truncated = false
@@ -76,6 +84,9 @@ async function readBounded(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      // Reported before the ceiling is applied, so a watcher sees the tool
+      // working even on the chunk that ends up being trimmed.
+      if (onOutput) onOutput(decoder.decode(value, { stream: true }))
       if (length + value.byteLength > limit) {
         chunks.push(value.slice(0, Math.max(0, limit - length)))
         length = limit
