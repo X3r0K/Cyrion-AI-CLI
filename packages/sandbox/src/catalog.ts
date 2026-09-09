@@ -147,13 +147,10 @@ export const toolCatalog: readonly ToolRequirement[] = [
   },
   {
     capability: "dns.enum",
-    binary: "dnsx",
-    purpose: "Resolve and enumerate approved DNS records",
-    packages: { brew: "dnsx" },
+    binary: "",
+    purpose: "Every record an approved name publishes, and the hosts its zone delegates to",
+    packages: {},
     inImage: true,
-    note: "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
-    optional: true,
-    planned: true,
   },
   {
     capability: "repo.scan",

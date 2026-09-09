@@ -162,11 +162,15 @@ describe("capability adapters", () => {
 describe("capabilities this release can actually serve", () => {
   test("names a granted capability that no adapter implements", () => {
     expect(unservedCapabilities(["dns.lookup", "http.probe"])).toEqual([])
-    // Listed in the catalog as the intended shape, but nothing serves it yet.
     expect(unservedCapabilities(["http.probe", "repo.inventory"])).toEqual([])
-    // web.fuzz has an adapter now; dns.enum is still catalog-only.
-    expect(unservedCapabilities(["http.probe", "web.fuzz", "dns.enum"])).toEqual(["dns.enum"])
+    // Every row of the catalog is served now, so what this catches is a
+    // manifest naming something this release has never heard of — a typo, or a
+    // capability an operator expected an MCP server to provide and did not
+    // declare. It fails before the run rather than at dispatch.
+    expect(unservedCapabilities(["http.probe", "web.fuzz", "mobile.inspect"])).toEqual(["mobile.inspect"])
     expect(unservedCapabilities(["shell.exec", "python.exec", "vuln.scan", "sqli.test"])).toEqual([])
+    // Nothing in the catalog is unserved any more.
+    expect(unservedCapabilities(toolCatalog.map((tool) => tool.capability))).toEqual([])
   })
 
   test("the catalog marks exactly the capabilities without an adapter", () => {

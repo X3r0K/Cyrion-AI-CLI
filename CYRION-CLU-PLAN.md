@@ -525,6 +525,7 @@ something demonstrable.
 | 14 · Pacing **[done]** | 0.5 | `limits` in the manifest, a per-host limiter in the tool gateway shared by every agent, the wait recorded on the accepted event, and the pacing stated in every report | Six agents aimed at one host never exceed its concurrency cap, a planner naming more paths does not buy more of that host, and a spent ceiling is refused with the limit named ✔ |
 | 15 · Credentials **[done]** | 1 | `@cyrion/credentials`, `${cred:name}` references resolved at the send funnel, host-bound credentials, response scrubbing, `cyrion credentials`, and replay against the operator's own store | A check authenticates against a live target while the artifact, the event log, and the proof bundle record the reference rather than the value; a credential bound elsewhere is refused before the request leaves ✔ |
 | 16 · Rendered pages **[done]** | 1 | `browser.session`: a headless page under a per-request scope filter, screenshot and DOM evidence, the endpoints a script called, and a container run that refuses rather than leaving the allowlist quietly | A page reaching for a third-party script and image has both aborted before they are sent, the endpoint it called after loading is reported, and the screenshot verifies as a real PNG by digest ✔ |
+| 17 · Every catalog row is real **[done]** | 0.5 | `dns.enum` implemented in Cyrion: every record an approved name publishes, absent told apart from failed, and NS/MX/CNAME delegation labelled against the manifest | `cyrion tools` lists no capability it cannot serve; a zone's nameservers are reported as out of scope and never queried; a wildcard is refused rather than guessed at ✔ |
 
 Roughly four months of focused work to a credible public beta. The first three
 phases are the ones that convert the current fixture demo into a real tool;
@@ -569,7 +570,7 @@ pin the worker image by digest in the release manifest.
 4. **`docs/TERMINAL.md` responsive claims.** ✔ Now accurate, with the pane math
    derived from the terminal width and verified at 84, 100, and 168 columns.
 
-### Delivered in phases 0 through 16
+### Delivered in phases 0 through 17
 
 - `packages/llm`: `ModelClient` interface; `openai-compatible`, `anthropic`, and
   native `ollama` adapters; per-role routing; strict config validation that
@@ -850,6 +851,27 @@ pin the worker image by digest in the release manifest.
 - The evidence store now takes bytes as well as text, so a screenshot is a real
   PNG a reader can open and a digest that covers the same bytes they would see —
   rather than base64 wearing a PNG's name.
+
+- `dns.enum` was the last row of the catalog with no adapter behind it, and
+  `cyrion tools` printed it as NOT IMPLEMENTED YET so a manifest could not be
+  fooled into granting it. It is now implemented in Cyrion rather than through
+  dnsx, for the reason `http.crawl` is: local mode has to keep working on a
+  machine with nothing installed, and a record lookup needs no binary.
+- Passive in a specific sense — it asks about the approved name and nothing
+  else. No wordlist, no subdomain guessing, and a wildcard target refused,
+  because a subdomain Cyrion invented is not in the manifest and finding it
+  would produce an address the engagement may not touch.
+- A resolver says "publishes no CNAME" by failing the query, so absent and
+  broken arrive down one path and are separated before anything is reported.
+  "No MX" and "the MX query broke" are different facts about a zone; the summary
+  carries both, and one failed type never costs the answers of the others.
+- NS, MX and CNAME name other hosts, usually somebody else's. Each is labelled
+  against the manifest and none is ever queried: learning that a zone depends on
+  a third party is often the finding, and it is still not permission to look at
+  that third party.
+- The pin stays under one owner. `dns.lookup` writes it and every later
+  connection is held to it; `dns.enum` only says when its answer disagrees, which
+  is the rebinding case the scope engine already refuses.
 
 ## 19. Open decisions for the maintainer
 

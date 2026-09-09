@@ -293,6 +293,28 @@ to start when the scope has since changed. Redirect and DNS-pinning checks live
 in the same engine, so a rebinding answer or an out-of-scope hop is refused
 rather than followed. See [Targets and scope](docs/SCOPE.md).
 
+## What a name publishes
+
+`dns.enum` asks one approved name for every record type it publishes — A, AAAA,
+CNAME, MX, NS, TXT, SOA, CAA — and says which other hosts its zone depends on:
+
+```sh
+cyrion probe --capability dns.enum --target example.com
+```
+
+```
+5 record types for example.com · 2 delegations
+externalDelegations: hera.ns.cloudflare.com, elliott.ns.cloudflare.com
+```
+
+Passive in a specific sense: it asks about the approved name and nothing else.
+No wordlist, no subdomain guessing, and a wildcard target refused — a subdomain
+Cyrion invented is not in the manifest, so finding it would produce an address
+the engagement may not touch. Nameservers and mail exchangers are reported and
+labelled against the scope; none of them is ever queried. Absent records are
+kept apart from failed queries, because "no MX" and "the MX query broke" are
+different facts about a zone. See [DNS](docs/DNS.md).
+
 ## Rendering a page
 
 A crawl reads the links a site publishes — most of a server-rendered
@@ -475,6 +497,8 @@ See [Credentials](docs/CREDENTIALS.md) for the operator store, host binding,
 and what a stored artifact records in place of a secret.
 See [Rendering a page](docs/BROWSER.md) for the per-request scope filter, what a
 session captures, and why a container run refuses it by default.
+See [DNS](docs/DNS.md) for what each of the two DNS capabilities answers, which
+one owns the pin, and how delegation is reported without being followed.
 
 See [Supervised execution](docs/SUPERVISION.md) for interactive approval,
 headless safeguards, audit events, and restart behavior.

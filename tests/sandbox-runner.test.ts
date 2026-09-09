@@ -126,12 +126,14 @@ describe("host tooling", () => {
   test("maps each capability to the package that provides it", () => {
     expect(requirementFor("net.portscan")?.binary).toBe("nmap")
     expect(requirementFor("http.probe")?.binary).toBe("")
-    // http.crawl and http.probe are implemented in Cyrion; dns.enum is a tool
-    // this package manager does not carry, so it is named as a manual step.
+    // http.probe, http.crawl and dns.enum are implemented in Cyrion, so they
+    // need nothing installed; nuclei is a tool apt does not carry, so it is
+    // named as a manual step beside the command that installs the rest.
     expect(requirementFor("http.crawl")?.binary).toBe("")
-    const plan = installPlan([requirementFor("net.portscan")!, requirementFor("dns.enum")!], "apt")
+    expect(requirementFor("dns.enum")?.binary).toBe("")
+    const plan = installPlan([requirementFor("net.portscan")!, requirementFor("vuln.scan")!], "apt")
     expect(plan.command).toBe("sudo apt-get install -y nmap")
-    expect(plan.manual.map((tool) => tool.binary)).toEqual(["dnsx"])
+    expect(plan.manual.map((tool) => tool.binary)).toEqual(["nuclei"])
     expect(installPlan([requirementFor("net.portscan")!], "pacman").command).toBe("sudo pacman -S --needed nmap")
     expect(installPlan([], "apt").command).toBe("")
   })

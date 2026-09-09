@@ -12,6 +12,7 @@ import { binariesFor, type ToolRunner } from "@cyrion/sandbox"
 import { browserSession } from "./browser"
 import { httpCrawl } from "./crawl"
 import { dnsLookup } from "./dns"
+import { dnsEnum } from "./dns-enum"
 import { httpProbe, httpRequest } from "./http"
 import { knowledgeSearch } from "./knowledge"
 import { netPortscan, netTls } from "./network"
@@ -19,10 +20,12 @@ import { pocRun } from "./poc"
 import { repoDeps, repoInventory, repoScan } from "./repo"
 import { sqliTest, vulnScan, webFuzz } from "./scanners"
 import { pythonExec, shellExec } from "./shell"
+import type { DnsResolver } from "./dns-enum"
 import type { CapabilityAdapter, CapabilityContext } from "./types"
 
 export const capabilityAdapters: readonly CapabilityAdapter[] = [
   dnsLookup,
+  dnsEnum,
   httpProbe,
   httpRequest,
   httpCrawl,
@@ -76,6 +79,8 @@ export interface RegistryOptions {
    * capability rather than quietly stepping outside the egress allowlist.
    */
   allowHostBrowser?: boolean
+  /** Resolver `dns.enum` asks. Absent means the system resolver. */
+  dnsResolver?: DnsResolver
   /**
    * Adapters this release does not ship — today, operator-approved MCP tools.
    * They are filtered by `capabilities` like every built-in, and may not answer
@@ -143,6 +148,7 @@ export class CapabilityRegistry {
       ...(options.embedder ? { embedder: options.embedder } : {}),
       ...(options.credentials ? { credentials: options.credentials } : {}),
       ...(options.allowHostBrowser ? { allowHostBrowser: true } : {}),
+      ...(options.dnsResolver ? { dnsResolver: options.dnsResolver } : {}),
       nextEvidenceId: () => `${this.#prefix}-${String(++this.#evidenceSequence).padStart(4, "0")}`,
     }
   }

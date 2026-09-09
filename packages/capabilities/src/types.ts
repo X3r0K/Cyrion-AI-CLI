@@ -1,5 +1,6 @@
 import type { EvidenceRef, EvidenceStore, ScopePolicy, ToolExecutionRequest, ToolProgress } from "@cyrion/contracts"
 import type { OperatorCredentials } from "@cyrion/credentials"
+import type { DnsResolver } from "./dns-enum"
 import type { Embedder, KnowledgeStore } from "@cyrion/knowledge"
 import type { TargetPin } from "@cyrion/scope"
 import type { ToolRunner } from "@cyrion/sandbox"
@@ -16,6 +17,12 @@ export interface CapabilityContext {
   knowledge?: KnowledgeStore
   /** Ranks retrieval semantically as well as lexically. Absent means lexical only. */
   embedder?: Embedder
+  /**
+   * Resolver `dns.enum` asks. Absent means the system resolver, which is what
+   * every real run uses; it exists so the record handling can be proved without
+   * depending on a live zone.
+   */
+  dnsResolver?: DnsResolver
   /**
    * The operator has accepted that `browser.session` drives a browser on this
    * host even in container mode, where its requests bypass the kernel egress
