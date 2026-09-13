@@ -53,7 +53,7 @@
     "@opentui/core": "0.5.10"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-arm64": "0.5.10",
+    "@opentui/core-darwin-arm64": "0.5.11",
     "@opentui/core-darwin-x64": "0.5.10",
     "@opentui/core-linux-arm64": "0.5.10",
     "@opentui/core-linux-arm64-musl": "0.5.10",
